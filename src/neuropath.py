@@ -55,9 +55,9 @@ class NeuroPath:
     def __init__(self, corpus_name='hotpotqa', extraction_model='openai', extraction_model_name='gpt-4o-mini',
                  graph_creating_retriever_name='facebook/contriever', extraction_type='ner', graph_type='facts', sim_threshold=0.8, node_specificity=True,
                  colbert_config=None, dpr_only=False, graph_alg='kg_path', corpus_path=None,
-                 qa_model: LangChainModel = None, linking_retriever_name=None):
+                 qa_model: LangChainModel = None, linking_retriever_name=None, max_hop=2):
 
-
+        self.max_hop = max_hop
         self.corpus_name = corpus_name
         self.extraction_model_name = extraction_model_name
         self.extraction_model_name_processed = extraction_model_name.replace('/', '_')
@@ -122,17 +122,17 @@ class NeuroPath:
             # Loading Doc Embeddings
             self.get_dpr_doc_embedding()
 
-        if self.linking_retriever_name == 'colbertv2':
-            if self.dpr_only is False or self.doc_ensemble:
-                colbertv2_index(self.phrases.tolist(), self.corpus_name, 'phrase', self.colbert_config['phrase_index_name'], overwrite=True)
-                with Run().context(RunConfig(nranks=1, experiment="phrase", root=self.colbert_config['root'])):
-                    config = ColBERTConfig(root=self.colbert_config['root'], )
-                    self.phrase_searcher = Searcher(index=self.colbert_config['phrase_index_name'], config=config, verbose=0)
-            if self.doc_ensemble or dpr_only:
-                colbertv2_index(self.dataset_df['paragraph'].tolist(), self.corpus_name, 'corpus', self.colbert_config['doc_index_name'], overwrite=True)
-                with Run().context(RunConfig(nranks=1, experiment="corpus", root=self.colbert_config['root'])):
-                    config = ColBERTConfig(root=self.colbert_config['root'], )
-                    self.corpus_searcher = Searcher(index=self.colbert_config['doc_index_name'], config=config, verbose=0)
+        # if self.linking_retriever_name == 'colbertv2':
+        #     if self.dpr_only is False or self.doc_ensemble:
+        #         colbertv2_index(self.phrases.tolist(), self.corpus_name, 'phrase', self.colbert_config['phrase_index_name'], overwrite=True)
+        #         with Run().context(RunConfig(nranks=1, experiment="phrase", root=self.colbert_config['root'])):
+        #             config = ColBERTConfig(root=self.colbert_config['root'], )
+        #             self.phrase_searcher = Searcher(index=self.colbert_config['phrase_index_name'], config=config, verbose=0)
+        #     if self.doc_ensemble or dpr_only:
+        #         colbertv2_index(self.dataset_df['paragraph'].tolist(), self.corpus_name, 'corpus', self.colbert_config['doc_index_name'], overwrite=True)
+        #         with Run().context(RunConfig(nranks=1, experiment="corpus", root=self.colbert_config['root'])):
+        #             config = ColBERTConfig(root=self.colbert_config['root'], )
+        #             self.corpus_searcher = Searcher(index=self.colbert_config['doc_index_name'], config=config, verbose=0)
 
         self.statistics = {}
         self.ensembling_debug = []
@@ -172,7 +172,7 @@ class NeuroPath:
 
 
    
-    def llm_path_track(self, path_prompt, query, vtp=None):
+    def llm_path_track(self, path_prompt, query, one_shot=False):
         start_time = time.time()
         # print(vtp)
         # paths = path_dict['paths']
@@ -191,6 +191,26 @@ Return the required JSON object.
     "continue": 0 or 1 (0 = stop expanding, 1 = continue expanding)
 }
 """
+        if one_shot == True:
+            sys_prompt += """
+# Example
+Query: Which film has the director who was born later, El Extrano Viaje or Love In Pawn?
+Paths:
+0: El Extrano Viaje->released in->1964;
+1: El Extrano Viaje->directed by->Fernando Fernan Gomez; <expandable>: [Fernando Fernan Gomez]
+2: El Extrano Viaje->starring->Jose Isbert; <expandable>: [Jose Isbert]
+3: Love in Pawn->released in->1953;
+4: Love In Pawn->directed by->Charles Saunders; <expandable>: [Charles Saunders]
+{Output:
+"current_chain": "The director of El Extrano Viaje is Fernando Fernan Gomez. And the director of Love In
+Pawn is Charles Saunders",
+"valid_ids": [1,4],
+"expansion_requirements": "Find when were Fernando Fernan Gomez and Charles Saunders born.",
+"need_expand_ids": [1,4],
+"continue": 1
+}
+# Example End
+            """
         prompt = f"""Query: {query}
 Paths:\n"""
         prompt += path_prompt + '\nOutput:\n'
@@ -285,7 +305,7 @@ Paths:\n"""
         return path_dict
     
 
-    def Expand_by_llm(self, path_dict, query_embedding, query, vtp=None): 
+    def Expand_by_llm(self, path_dict, query_embedding, query, vtp=None, one_shot=False): 
         total_tokens = 0
         # 第一轮
         if path_dict['paths'] == []:
@@ -335,7 +355,7 @@ Paths:\n"""
             for i in range(len(path_dict['paths'])):
                 path_prompt += f"{i}: " + path_dict['paths'][i] + ' <expandable>: [' + self.phrases[path_dict['link_phrases'][i]] + ']' + '\n'
             
-            response_json, tokens, llm_time = self.llm_path_track(path_prompt, query, vtp)
+            response_json, tokens, llm_time = self.llm_path_track(path_prompt, query, one_shot)
             total_tokens += tokens       
             
             try:
@@ -453,7 +473,7 @@ Paths:\n"""
                     
             
             # print("第二轮 初始path_dict: \n", path_dict)
-            response_json, tokens, llm_time = self.llm_path_track(path_prompt, query, vtp)
+            response_json, tokens, llm_time = self.llm_path_track(path_prompt, query, one_shot)
             total_tokens += tokens
             try:
                 new_path_ids_list = response_json['valid_ids']
@@ -491,7 +511,7 @@ Paths:\n"""
 
         
         
-    def get_path_filtered_docs(self, query_embedding, seed_phrase_ids, query, vtp=None):
+    def get_path_filtered_docs(self, query_embedding, seed_phrase_ids, query, one_shot):
         unique_phrase_ids_set = set(seed_phrase_ids)
         # 初始化
         path_dict = {}
@@ -500,16 +520,16 @@ Paths:\n"""
         path_dict['visited_docs'] = []  # 即访问的doc路径
         path_dict['need_expand_ids'] = []
         flag = 1
-        max_layer = 2
+        max_hop = self.max_hop
         count = 0
         total_tokens = 0
         cur_vtp = query
         
         all_thought = ''
         llm_time_for_one_q = 0
-        while count < max_layer and flag==1:
+        while count < max_hop and flag==1:
             count += 1
-            path_dict, flag, tokens, llm_time = self.Expand_by_llm(path_dict, query_embedding, query, cur_vtp)
+            path_dict, flag, tokens, llm_time = self.Expand_by_llm(path_dict, query_embedding, query, cur_vtp, one_shot)
             llm_time_for_one_q += llm_time
             total_tokens += tokens
             all_thought = path_dict['current_chain'] + path_dict['expansion_requirements']
@@ -537,7 +557,7 @@ Paths:\n"""
        
  
     
-    def rank_docs(self, query: str, top_k, seed=1, expand_num=1):  # 
+    def rank_docs(self, query: str, top_k, seed=1, expand_num=1, one_shot=False):  # 
         """
         Rank documents based on the query
         @param query: the input phrase
@@ -564,7 +584,7 @@ Paths:\n"""
                 
                 
                 # 拿到新排名的doc id
-                candidate_doc_ids, candidate_paths, total_tokens, all_thought, llm_time_for_one_q = self.get_path_filtered_docs(None, linked_phrase_ids, query, None)
+                candidate_doc_ids, candidate_paths, total_tokens, all_thought, llm_time_for_one_q = self.get_path_filtered_docs(None, linked_phrase_ids, query, one_shot)
                 
                 query_embedding = self.embed_model.encode([query+all_thought], normalize_embeddings=True, device='cuda', show_progress_bar=False)
                 # assert False

@@ -49,8 +49,8 @@ def parse_prompt(file_path):
     return parsed_data
 
 
-def retrieve_step(query: str, corpus, top_k: int, rag: NeuroPath, dataset: str):
-    ranks, scores, candidate_doc_ids, candidate_paths, total_tokens, llm_time_for_one_q = rag.rank_docs(query, top_k=top_k)
+def retrieve_step(query: str, corpus, top_k: int, rag: NeuroPath, dataset: str, one_shot:bool):
+    ranks, scores, candidate_doc_ids, candidate_paths, total_tokens, llm_time_for_one_q = rag.rank_docs(query, top_k=top_k, one_shot=one_shot)
     # print("ranks：", len(ranks))
     # assert False
     if dataset in ['hotpotqa', 'hotpotqa_train']:
@@ -120,7 +120,7 @@ if __name__ == '__main__':
     parser.add_argument('--llm_model', type=str, default='gpt-4o-mini', help='Specific model name')
     parser.add_argument('--retriever', type=str, default='facebook/contriever')
     parser.add_argument('--prompt', type=str)
-    # parser.add_argument('--max_steps', type=int)
+    parser.add_argument('--max_hop', type=int, default=2)
     parser.add_argument('--top_k', type=int, default=10, help='retrieving k documents at each step')
     # parser.add_argument('--doc_ensemble', type=str, default='f')
     parser.add_argument('--dpr_only', type=str, default='f')
@@ -130,11 +130,12 @@ if __name__ == '__main__':
     # parser.add_argument('--damping', type=float, default=0.1)
     parser.add_argument('--force_retry', action='store_true')
     parser.add_argument('--track_alg', type=str, default='single_step')
+    parser.add_argument('--one_shot', type=str, default='f')
     args = parser.parse_args()
 
-    # Please set environment variable OPENAI_API_KEY
     # doc_ensemble = string_to_bool(args.doc_ensemble)
     dpr_only = string_to_bool(args.dpr_only)
+    one_shot = string_to_bool(args.one_shot)
 
     client = init_langchain_model(args.llm, args.llm_model)
     llm_model_name_processed = args.llm_model.replace('/', '_').replace('.', '_')
@@ -146,7 +147,7 @@ if __name__ == '__main__':
 
     # graph_type='facts' 
     rag = NeuroPath(args.dataset, args.llm, args.llm_model, args.retriever, node_specificity=not (args.wo_node_spec), graph_type='facts',
-                   colbert_config=colbert_configs, dpr_only=dpr_only, graph_alg=args.graph_alg)
+                   colbert_config=colbert_configs, dpr_only=dpr_only, graph_alg=args.graph_alg, max_hop=args.max_hop)
 
     data = json.load(open(f'data/{args.dataset}.json', 'r'))
     corpus = json.load(open(f'data/{args.dataset}_corpus.json', 'r'))
@@ -253,7 +254,7 @@ if __name__ == '__main__':
             
             query = sample['question']
             # all_logs = {}
-            retrieved_passages, scores, candidate_doc_ids, candidate_paths, total_tokens, llm_time_for_one_q = retrieve_step(query, corpus, args.top_k, rag, args.dataset)
+            retrieved_passages, scores, candidate_doc_ids, candidate_paths, total_tokens, llm_time_for_one_q = retrieve_step(query, corpus, args.top_k, rag, args.dataset, one_shot)
             # it = 1
             # all_logs[it] = logs
             # thoughts = []
