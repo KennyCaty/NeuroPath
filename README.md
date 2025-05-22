@@ -24,6 +24,9 @@ pip install -r requirements.txt
 
 ## Reproduction
 
+### Datasets
+All datasets used in the experiments are stored in the `data` directory, including three multi-hop QA datasets and two simple QA datasets.
+
 ### Optional environment variables configuration
 ```shell
 export HF_HOME="your_hf_home_path"
@@ -47,11 +50,11 @@ bash src/run_neuropath_main_exp.sh
 
 
 #### QA
-If you want to perform QA, refer to the `README.md` in src\qa folder
+If you want to perform QA, refer to the `README.md` in `src\qa` directory
 
 
 ### Baselines
-Please refer to the README.md file in the src/baselines directory for detailed instructions.
+Please refer to the README.md file in the `src/baselines` directory for detailed instructions.
 
 >  Note: If you need to use BM25, you must install ElasticSearch separately and uncomment the line from elasticsearch import Elasticsearch in the relevant code.  We recommend using elasticsearch==9.0.1.
 
