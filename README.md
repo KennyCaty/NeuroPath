@@ -43,11 +43,12 @@ Please first check the script content and specify a specific dataset for the exp
 ```shell
 bash src/setup_neuropath_main_exp.sh
 ```
+
 #### Retrieval
 ```shell
 bash src/run_neuropath_main_exp.sh
 ```
-
+The zero-shot setting is used by default. If you need to enable One-Shot, change `--one_shot f` to `--one_shot t` in the script.
 
 #### QA
 If you want to perform QA, refer to the `README.md` in `src\qa` directory
