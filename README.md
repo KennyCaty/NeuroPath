@@ -41,12 +41,12 @@ export TRANSFORMERS_OFFLINE=1  # Optional
 Please first check the script content and specify a specific dataset for the experiment. Specific parameters can be set in the script.
 #### Indexing
 ```shell
-bash src/setup_neuropath_main_exp.sh
+bash src/setup_neuropath_main_exps.sh
 ```
 
 #### Retrieval
 ```shell
-bash src/run_neuropath_main_exp.sh
+bash src/run_neuropath_main_exps.sh
 ```
 The zero-shot setting is used by default. If you need to enable One-Shot, change `--one_shot f` to `--one_shot t` in the script.
 

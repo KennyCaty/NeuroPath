@@ -50,7 +50,12 @@ if __name__ == '__main__':
     elif args.dataset == 'popqa':
         corpus = json.load(open('data/popqa_corpus.json', 'r'))
         corpus_contents = [item['title'] + '\n' + item['text'] for item in corpus]
-
+    elif args.dataset == 'multihoprag':
+        corpus = json.load(open('data/multihoprag_corpus.json', 'r'))
+        corpus_contents = [item['title'] + '\n' + item['text'] for item in corpus]
+    elif args.dataset == 'multihoprag_chunks':
+        corpus = json.load(open('data/multihoprag_chunks_corpus.json', 'r'))
+        corpus_contents = [item['title'] + '\n' + item['text'] for item in corpus]
 
     print('corpus size: {}'.format(len(corpus_contents)))
 
@@ -70,7 +75,8 @@ if __name__ == '__main__':
         model.to('cuda')
 
         # Encode passages in batches for efficiency
-        batch_size = 8 * torch.cuda.device_count()
+        batch_size = 4 * torch.cuda.device_count()
+        # batch_size = 1 * torch.cuda.device_count()
         vectors = np.zeros((len(corpus_contents), dim))
         for start_idx in tqdm(range(0, len(corpus_contents), batch_size), desc='encoding corpus'):
             end_idx = min(start_idx + batch_size, len(corpus_contents))

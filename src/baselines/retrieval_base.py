@@ -10,6 +10,8 @@ from src.processing import mean_pooling_embedding_with_normalization
 from src.elastic_search_tool import search_with_score
 import numpy as np
 from sentence_transformers import SentenceTransformer
+# for large embedding models
+from src.lm_wrapper.util import init_embedding_model
 
 import torch
 import concurrent
@@ -124,6 +126,42 @@ class Colbertv2Retriever(DocumentRetriever):
             scores.append(score)
         return ids, scores
 
+# large embedding model
+class LMRetriever(DocumentRetriever):
+    def __init__(self, model_name: str, faiss_index: str, corpus, device='cuda', norm=True):
+        """
+        
+        :param model_name:
+        :param faiss_index: The path to the faiss index
+        """
+        self.model = init_embedding_model(model_name)
+        self.faiss_index = faiss_index
+        self.corpus = corpus
+        self.device = device
+        self.norm = norm
+
+    def rank_docs(self, query: str, top_k: int):
+        try:
+            query_embedding = self.model.encode(query, 
+                                                instruction = 'Given a question, retrieve relevant documents that best answer the question.'  # hippo2用于检索文档
+                                                # instruction = 'Given a question, retrieve passages that answer the question'
+                                                # instruction = 'Given a web search query, retrieve relevant passages that answer the query'
+                                               )
+        except Exception as e:
+            print("[encode error]", e)
+        # query_embedding = np.expand_dims(query_embedding, axis=0)
+        if self.norm:
+            norm = np.linalg.norm(query_embedding, axis=1, keepdims=True)
+            query_embedding = query_embedding / norm
+
+        try:
+            query_embedding = query_embedding.astype(np.float32) 
+            inner_product, corpus_idx = self.faiss_index.search(query_embedding, top_k)
+        except Exception as e:
+            print("[faiss search error]", e)
+        # inner_product, corpus_idx = self.faiss_index.search(query_embedding, top_k)
+        return corpus_idx.tolist()[0], inner_product.tolist()[0]
+
 
 def parse_prompt(file_path: str, has_context=True):
     with open(file_path, 'r', encoding='utf-8') as file:
@@ -174,7 +212,10 @@ def parse_prompt(file_path: str, has_context=True):
 
 
 def retrieve_step(query: str, corpus, top_k: int, retriever: DocumentRetriever, dataset: str):
-    doc_ids, scores = retriever.rank_docs(query, top_k=top_k)
+    try:
+        doc_ids, scores = retriever.rank_docs(query, top_k=top_k)
+    except Exception as e:
+        print("[rank docs error]", e)
     if dataset in ['hotpotqa']:
         retrieved_passages = []
         for doc_id in doc_ids:
@@ -182,6 +223,8 @@ def retrieve_step(query: str, corpus, top_k: int, retriever: DocumentRetriever, 
             retrieved_passages.append(key + '\n' + ''.join(corpus[key]))
     elif dataset in ['musique', '2wikimultihopqa', 'nq_rear', 'popqa']:
         retrieved_passages = [corpus[doc_id]['title'] + '\n' + corpus[doc_id]['text'] for doc_id in doc_ids]
+    elif dataset in ['multihoprag', 'multihoprag_chunks']:
+        retrieved_passages = [corpus[doc_id]['text'] for doc_id in doc_ids]
     else:
         raise NotImplementedError(f'Dataset {dataset} not implemented')
     return retrieved_passages, scores
@@ -247,7 +290,7 @@ def process_sample(idx, sample, args, corpus, retriever, client, processed_ids):
         sample_id = sample['_id']
     elif args.dataset in ['musique']:
         sample_id = sample['id']
-    elif args.dataset in ['nq_rear', 'popqa']:
+    elif args.dataset in ['nq_rear', 'popqa', 'multihoprag', 'multihoprag_chunks']:
         sample_id = sample['id']
     else:
         raise NotImplementedError(f'Dataset {args.dataset} not implemented')
@@ -256,9 +299,15 @@ def process_sample(idx, sample, args, corpus, retriever, client, processed_ids):
         return  # Skip already processed samples
 
     # Perform retrieval and reasoning steps
-    query = sample['question']
-    retrieved_passages, scores = retrieve_step(query, corpus, args.top_k, retriever, args.dataset)
-
+    if sample.get('question', None):
+        query = sample['question'] 
+    else:
+        query = sample['query'] 
+    try:
+        retrieved_passages, scores = retrieve_step(query, corpus, args.top_k, retriever, args.dataset)
+    except Exception as e:
+        print('[error]: ', e)
+        
     thoughts = []
     retrieved_passages_dict = {passage: score for passage, score in zip(retrieved_passages, scores)}
     it = 1
@@ -302,19 +351,34 @@ def process_sample(idx, sample, args, corpus, retriever, client, processed_ids):
         gold_passages = [item for item in sample['paragraphs'] if item['is_supporting']]
         gold_items = set([item['title'] + '\n' + item['text'] for item in gold_passages])
         retrieved_items = retrieved_passages
+    # multihop-rag
+    elif args.dataset in ['multihoprag', 'multihoprag_chunks']:
+        gold_passages = [item for item in sample['evidence_list']]
+        gold_items = set([item['fact'] for item in gold_passages])
+        retrieved_items = retrieved_passages
     else:
         raise NotImplementedError(f'Dataset {args.dataset} not implemented')
 
     recall = dict()
     print(f'idx: {idx + 1} ', end='')
+    # for k in k_list:
+    #     recall[k] = sum(1 for t in gold_items if t in retrieved_items[:k]) / len(gold_items)
     for k in k_list:
-        recall[k] = sum(1 for t in gold_items if t in retrieved_items[:k]) / len(gold_items)
+        if args.dataset in ['multihoprag', 'multihoprag_chunks']:
+            recall[k] = round(
+                            sum(
+                                1 for gold in gold_items
+                                if any(gold in retrieved for retrieved in retrieved_items[:k])
+                            ) / len(gold_items), 4
+                        )
+        else:
+            recall[k] = round(sum(1 for t in gold_items if t in retrieved_items[:k]) / len(gold_items), 4)
     return idx, recall, retrieved_passages, thoughts, it
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, choices=['hotpotqa', 'musique', '2wikimultihopqa', 'nq_rear', 'popqa'], required=True)
+    parser.add_argument('--dataset', type=str, choices=['hotpotqa', 'musique', '2wikimultihopqa', 'nq_rear', 'popqa', 'multihoprag', 'multihoprag_chunks'], required=True)
     parser.add_argument('--llm', type=str, default='openai', help="LLM, e.g., 'openai' or 'together'")
     parser.add_argument('--llm_model', type=str, default='gpt-3.5-turbo-1106')
     parser.add_argument('--retriever', type=str, default='facebook/contriever')
@@ -355,6 +419,11 @@ if __name__ == '__main__':
         corpus = json.load(open('data/popqa_corpus.json', 'r'))
         prompt_path = 'data/ircot_prompts/2wikimultihopqa/gold_with_3_distractors_context_cot_qa_codex.txt'
         max_steps = args.max_steps if args.max_steps is not None else 2
+    elif args.dataset == 'multihoprag' or args.dataset == 'multihoprag_chunks':
+        data = json.load(open(f'data/{args.dataset}.json', 'r'))
+        corpus = json.load(open(f'data/{args.dataset}_corpus.json', 'r'))
+        prompt_path = 'data/ircot_prompts/2wikimultihopqa/gold_with_3_distractors_context_cot_qa_codex.txt'
+        max_steps = args.max_steps if args.max_steps is not None else 2
     else:
         raise NotImplementedError(f'Dataset {args.dataset} not implemented')
     few_shot_samples = parse_prompt(prompt_path)
@@ -393,6 +462,8 @@ if __name__ == '__main__':
             faiss_index = faiss.read_index('data/nq_rear/nq_rear_facebook_contriever_ip_norm.index')
         elif args.dataset == 'popqa':
             faiss_index = faiss.read_index('data/popqa/popqa_facebook_contriever_ip_norm.index')
+        elif args.dataset == 'multihoprag' or args.dataset == 'multihoprag_chunks':
+            faiss_index = faiss.read_index(f'data/{args.dataset}/{args.dataset}_facebook_contriever_ip_norm.index')
         retriever = DPRRetriever(args.retriever, faiss_index, corpus)
     elif args.retriever.startswith('BAAI/bge-m3'):
         if args.dataset == 'hotpotqa':
@@ -401,8 +472,34 @@ if __name__ == '__main__':
             faiss_index = faiss.read_index('data/musique/musique_BAAI_bge-m3_ip_norm.index')
         elif args.dataset == '2wikimultihopqa':
             faiss_index = faiss.read_index('data/2wikimultihopqa/2wikimultihopqa_BAAI_bge-m3_ip_norm.index')
+        elif args.dataset == 'multihoprag' or args.dataset == 'multihoprag_chunks':
+            faiss_index = faiss.read_index(f'data/{args.dataset}/{args.dataset}_BAAI_bge-m3_ip_norm.index')
         retriever = SentenceTransformersRetriever(args.retriever, faiss_index, corpus)
-    
+    # large embedding models
+    elif args.retriever.startswith('Alibaba-NLP/gte-Qwen2-7B-instruct'):
+        if args.dataset == 'hotpotqa':
+            faiss_index = faiss.read_index('data/hotpotqa/hotpotqa_Alibaba-NLP_gte-Qwen2-7B-instruct_ip_norm.index')
+        elif args.dataset == 'musique':
+            faiss_index = faiss.read_index('data/musique/musique_Alibaba-NLP_gte-Qwen2-7B-instruct_ip_norm.index')
+        elif args.dataset == '2wikimultihopqa':
+            faiss_index = faiss.read_index('data/2wikimultihopqa/2wikimultihopqa_Alibaba-NLP_gte-Qwen2-7B-instruct_ip_norm.index')
+        retriever = LMRetriever(args.retriever, faiss_index, corpus)
+    elif args.retriever.startswith('GritLM/GritLM-7B'):
+        if args.dataset == 'hotpotqa':
+            faiss_index = faiss.read_index('data/hotpotqa/hotpotqa_GritLM_GritLM-7B_ip_norm.index')
+        elif args.dataset == 'musique':
+            faiss_index = faiss.read_index('data/musique/musique_GritLM_GritLM-7B_ip_norm.index')
+        elif args.dataset == '2wikimultihopqa':
+            faiss_index = faiss.read_index('data/2wikimultihopqa/2wikimultihopqa_GritLM_GritLM-7B_ip_norm.index')
+        retriever = LMRetriever(args.retriever, faiss_index, corpus)
+    elif args.retriever.startswith('nvidia/NV-Embed-v2'):
+        if args.dataset == 'hotpotqa':
+            faiss_index = faiss.read_index('data/hotpotqa/hotpotqa_nvidia_NV-Embed-v2_ip_norm.index')
+        elif args.dataset == 'musique':
+            faiss_index = faiss.read_index('data/musique/musique_nvidia_NV-Embed-v2_ip_norm.index')
+        elif args.dataset == '2wikimultihopqa':
+            faiss_index = faiss.read_index('data/2wikimultihopqa/2wikimultihopqa_nvidia_NV-Embed-v2_ip_norm.index')
+        retriever = LMRetriever(args.retriever, faiss_index, corpus)
 
 
     k_list = [1, 2, 5, 10, 15, 20, 30, 50, 100]
@@ -445,7 +542,13 @@ if __name__ == '__main__':
         futures = [executor.submit(process_sample, idx, sample, args, corpus, retriever, client, processed_ids) for idx, sample in enumerate(data)]
 
         for future in tqdm(concurrent.futures.as_completed(futures), total=len(data), desc='Parallel RETRIEVING'):
-            idx, recall, retrieved_passages, thoughts, it = future.result()
+            # idx, recall, retrieved_passages, thoughts, it = future.result()
+            try:
+                idx, recall, retrieved_passages, thoughts, it = future.result()
+            except Exception as e:
+                print(f"[ERROR] Exception in thread: {e}")
+                # continue  # 跳过当前失败的线程任务
+            
             print("retireved done")
             # print metrics
             for k in k_list:

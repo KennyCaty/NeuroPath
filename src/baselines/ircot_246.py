@@ -183,6 +183,8 @@ def retrieve_step(query: str, corpus, top_k: int, retriever: DocumentRetriever, 
             retrieved_passages.append(key + '\n' + ''.join(corpus[key]))
     elif dataset in ['musique', '2wikimultihopqa', 'nq_rear', 'popqa']:
         retrieved_passages = [corpus[doc_id]['title'] + '\n' + corpus[doc_id]['text'] for doc_id in doc_ids]
+    elif dataset in ['multihoprag', 'multihoprag_chunks']:
+        retrieved_passages = [corpus[doc_id]['text'] for doc_id in doc_ids]
     else:
         raise NotImplementedError(f'Dataset {dataset} not implemented')
     return retrieved_passages, scores
@@ -249,9 +251,7 @@ def process_sample(idx, sample, args, corpus, retriever, client, processed_ids):
     # Check if the sample has already been processed
     if args.dataset in ['hotpotqa', '2wikimultihopqa']:
         sample_id = sample['_id']
-    elif args.dataset in ['musique']:
-        sample_id = sample['id']
-    elif args.dataset in ['nq_rear', 'popqa']:
+    elif args.dataset in ['musique', 'nq_rear', 'popqa', 'multihoprag_chunks']:
         sample_id = sample['id']
     else:
         raise NotImplementedError(f'Dataset {args.dataset} not implemented')
@@ -262,42 +262,52 @@ def process_sample(idx, sample, args, corpus, retriever, client, processed_ids):
     # 是否IRCOT
     if max_steps > 1:
         iter_k = 2 # 2, 4, 6 
+        # Perform retrieval and reasoning steps
+        query = sample['question']
+        # retrieved_passages, scores = retrieve_step(query, corpus, args.top_k, retriever, args.dataset)
+        retrieved_passages, scores = retrieve_step(query, corpus, iter_k, retriever, args.dataset)
 
-    # Perform retrieval and reasoning steps
-    query = sample['question']
-    # retrieved_passages, scores = retrieve_step(query, corpus, args.top_k, retriever, args.dataset)
-    retrieved_passages, scores = retrieve_step(query, corpus, iter_k, retriever, args.dataset)
+        thoughts = []
+        retrieved_passages_dict = {passage: score for passage, score in zip(retrieved_passages, scores)}
+        it = 1
+        # 增加token计算
+        total_tokens = 0
+        for it in range(1, max_steps):
+            # print("ITER： ", it)
+            # new_thought, tokens = reason_step(args.dataset, few_shot_samples, query, retrieved_passages[:args.top_k], thoughts, client)
+            new_thought, tokens = reason_step(args.dataset, few_shot_samples, query, retrieved_passages, thoughts, client)
+            total_tokens += tokens
+            thoughts.append(new_thought)
+            if 'So the answer is:' in new_thought:
+                break
+            # 增加迭代检索次数
+            iter_k += 2
+            # new_retrieved_passages, new_scores = retrieve_step(new_thought, corpus, args.top_k, retriever, args.dataset)
+            new_retrieved_passages, new_scores = retrieve_step(new_thought, corpus, iter_k, retriever, args.dataset)
 
-    thoughts = []
-    retrieved_passages_dict = {passage: score for passage, score in zip(retrieved_passages, scores)}
-    it = 1
-    # 增加token计算
-    total_tokens = 0
-    for it in range(1, max_steps):
-        # print("ITER： ", it)
-        # new_thought, tokens = reason_step(args.dataset, few_shot_samples, query, retrieved_passages[:args.top_k], thoughts, client)
-        new_thought, tokens = reason_step(args.dataset, few_shot_samples, query, retrieved_passages, thoughts, client)
-        total_tokens += tokens
-        thoughts.append(new_thought)
-        if 'So the answer is:' in new_thought:
-            break
-        # 增加迭代检索次数
-        iter_k += 2
-        # new_retrieved_passages, new_scores = retrieve_step(new_thought, corpus, args.top_k, retriever, args.dataset)
-        new_retrieved_passages, new_scores = retrieve_step(new_thought, corpus, iter_k, retriever, args.dataset)
+            for passage, score in zip(new_retrieved_passages, new_scores):
+                if passage in retrieved_passages_dict:
+                    retrieved_passages_dict[passage] = max(retrieved_passages_dict[passage], score)
+                else:
+                    retrieved_passages_dict[passage] = score
 
-        for passage, score in zip(new_retrieved_passages, new_scores):
-            if passage in retrieved_passages_dict:
-                retrieved_passages_dict[passage] = max(retrieved_passages_dict[passage], score)
-            else:
-                retrieved_passages_dict[passage] = score
+            retrieved_passages, scores = zip(*retrieved_passages_dict.items())
 
+            sorted_passages_scores = sorted(zip(retrieved_passages, scores), key=lambda x: x[1], reverse=True)
+            retrieved_passages, scores = zip(*sorted_passages_scores)
+        
+    else:
+        # Perform retrieval and reasoning steps
+        query = sample['question']
+        thoughts = []
+        it = 1
+        total_tokens = 0
+        # retrieved_passages, scores = retrieve_step(query, corpus, args.top_k, retriever, args.dataset)
+        retrieved_passages, scores = retrieve_step(query, corpus, 5, retriever, args.dataset)
+        retrieved_passages_dict = {passage: score for passage, score in zip(retrieved_passages, scores)}
         retrieved_passages, scores = zip(*retrieved_passages_dict.items())
-
         sorted_passages_scores = sorted(zip(retrieved_passages, scores), key=lambda x: x[1], reverse=True)
         retrieved_passages, scores = zip(*sorted_passages_scores)
-        
-
     # end iteration
 
     # calculate recall
@@ -321,21 +331,35 @@ def process_sample(idx, sample, args, corpus, retriever, client, processed_ids):
         gold_passages = [item for item in sample['paragraphs'] if item['is_supporting']]
         gold_items = set([item['title'] + '\n' + item['text'] for item in gold_passages])
         retrieved_items = retrieved_passages
+    # multihop-rag
+    elif args.dataset in ['multihoprag', 'multihoprag_chunks']:
+        gold_passages = [item for item in sample['evidence_list']]
+        gold_items = set([item['fact'] for item in gold_passages])
+        retrieved_items = retrieved_passages
     else:
         raise NotImplementedError(f'Dataset {args.dataset} not implemented')
 
     recall = dict()
     print(f'idx: {idx + 1} ', end='')
+    # for k in k_list:
+    #     recall[k] = sum(1 for t in gold_items if t in retrieved_items[:k]) / len(gold_items)
     for k in k_list:
-        recall[k] = sum(1 for t in gold_items if t in retrieved_items[:k]) / len(gold_items)
-        
+        if args.dataset in ['multihoprag', 'multihoprag_chunks']:
+            recall[k] = round(
+                            sum(
+                                1 for gold in gold_items
+                                if any(gold in retrieved for retrieved in retrieved_items[:k])
+                            ) / len(gold_items), 4
+                        )
+        else:
+            recall[k] = round(sum(1 for t in gold_items if t in retrieved_items[:k]) / len(gold_items), 4)
     elapsed_time = time.time() - start_time  # 记录结束时间并计算耗时
     return idx, recall, retrieved_passages, thoughts, it, total_tokens, elapsed_time
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, choices=['hotpotqa', 'musique', '2wikimultihopqa', 'nq_rear', 'popqa'], required=True)
+    parser.add_argument('--dataset', type=str, choices=['hotpotqa', 'musique', '2wikimultihopqa', 'nq_rear', 'popqa', 'multihoprag_chunks'], required=True)
     parser.add_argument('--llm', type=str, default='openai', help="LLM, e.g., 'openai' or 'together'")
     parser.add_argument('--llm_model', type=str, default='gpt-3.5-turbo-1106')
     parser.add_argument('--retriever', type=str, default='facebook/contriever')
@@ -376,6 +400,11 @@ if __name__ == '__main__':
         corpus = json.load(open('data/popqa_corpus.json', 'r'))
         prompt_path = 'data/ircot_prompts/2wikimultihopqa/gold_with_3_distractors_context_cot_qa_codex.txt'
         max_steps = args.max_steps if args.max_steps is not None else 2
+    elif args.dataset == 'multihoprag_chunks':
+        data = json.load(open('data/multihoprag_chunks.json', 'r'))
+        corpus = json.load(open('data/multihoprag_chunks_corpus.json', 'r'))
+        prompt_path = 'data/ircot_prompts/2wikimultihopqa/gold_with_3_distractors_context_cot_qa_codex.txt'
+        max_steps = args.max_steps if args.max_steps is not None else 2
     else:
         raise NotImplementedError(f'Dataset {args.dataset} not implemented')
     few_shot_samples = parse_prompt(prompt_path)
@@ -414,6 +443,8 @@ if __name__ == '__main__':
             faiss_index = faiss.read_index('data/nq_rear/nq_rear_facebook_contriever_ip_norm.index')
         elif args.dataset == 'popqa':
             faiss_index = faiss.read_index('data/popqa/popqa_facebook_contriever_ip_norm.index')
+        elif args.dataset == 'multihoprag_chunks':
+            faiss_index = faiss.read_index('data/multihoprag_chunks/multihoprag_chunks_facebook_contriever_ip_norm.index')
         retriever = DPRRetriever(args.retriever, faiss_index, corpus)
     elif args.retriever.startswith('sentence-transformers/gtr-t5'):
         if args.dataset == 'hotpotqa':
@@ -431,6 +462,8 @@ if __name__ == '__main__':
             faiss_index = faiss.read_index('data/musique/musique_BAAI_bge-m3_ip_norm.index')
         elif args.dataset == '2wikimultihopqa':
             faiss_index = faiss.read_index('data/2wikimultihopqa/2wikimultihopqa_BAAI_bge-m3_ip_norm.index')
+        elif args.dataset == 'multihoprag_chunks':
+            faiss_index = faiss.read_index('data/multihoprag_chunks/multihoprag_chunks_BAAI_bge-m3_ip_norm.index')
         retriever = SentenceTransformersRetriever(args.retriever, faiss_index, corpus)
 
     k_list = [1, 2, 5, 10, 15, 20, 30, 50, 100]

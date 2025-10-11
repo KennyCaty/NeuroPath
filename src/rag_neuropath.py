@@ -282,6 +282,11 @@ if __name__ == '__main__':
                 gold_passages = [item for item in sample['paragraphs'] if item['is_supporting']]
                 gold_items = set([item['title'] + '\n' + item['text'] for item in gold_passages])
                 retrieved_items = retrieved_passages
+            # multihop-rag
+            elif args.dataset in ['multihoprag', 'multihoprag_chunks']:
+                gold_passages = [item for item in sample['evidence_list']]
+                gold_items = set([item['fact'] for item in gold_passages])
+                retrieved_items = retrieved_passages
             
             recall = {}
             for k in k_list:
@@ -303,6 +308,9 @@ if __name__ == '__main__':
             elif args.dataset in ['popqa']:
                 sample['supporting_docs'] = [item for item in sample['paragraphs'] if item['is_supporting']]
                 del sample['paragraphs']
+            elif args.dataset in ['multihoprag', 'multihoprag_chunks']:
+                sample['supporting_docs'] = [item for item in sample['evidence_list']]
+                del sample['evidence_list']
             
             sample['retrieved'] = retrieved_passages[:10]
             sample['retrieved_scores'] = scores[:10]

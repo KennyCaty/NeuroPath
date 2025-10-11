@@ -12,6 +12,11 @@ from threading import Lock
 from src.processing import extract_json_dict
 import numpy as np
 from sentence_transformers import SentenceTransformer
+# for large embedding models
+from src.lm_wrapper.util import init_embedding_model
+
+import warnings
+warnings.filterwarnings("ignore")
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -84,6 +89,45 @@ class SentenceTransformersRetriever(DocumentRetriever):
 
         return corpus_idx.tolist()[0], inner_product.tolist()[0]
 
+# large embedding model
+class LMRetriever(DocumentRetriever):
+    def __init__(self, model_name: str, faiss_index: str, corpus, device='cuda', norm=True):
+        """
+        
+        :param model_name:
+        :param faiss_index: The path to the faiss index
+        """
+        self.model = init_embedding_model(model_name)
+        self.faiss_index = faiss_index
+        self.corpus = corpus
+        self.device = device
+        self.norm = norm
+
+    def rank_docs(self, query: str, top_k: int):
+        try:
+            query_embedding = self.model.encode(query, 
+                                                instruction = 'Given a question, retrieve relevant documents that best answer the question.'  # hippo2用于检索文档
+                                                # instruction = 'Given a question, retrieve passages that answer the question'
+                                                # instruction = 'Given a web search query, retrieve relevant passages that answer the query'
+                                               )
+            # query_embedding = self.model.encode("Instruct: Given a question, retrieve relevant documents that best answer the question.\nQuery: "+query)
+            
+        except Exception as e:
+            print("[encode error]", e)
+        # query_embedding = np.expand_dims(query_embedding, axis=0)
+        if self.norm:
+            norm = np.linalg.norm(query_embedding, axis=1, keepdims=True)
+            query_embedding = query_embedding / norm
+
+        try:
+            query_embedding = query_embedding.astype(np.float32) 
+            inner_product, corpus_idx = self.faiss_index.search(query_embedding, top_k)
+        except Exception as e:
+            print("[faiss search error]", e)
+        # inner_product, corpus_idx = self.faiss_index.search(query_embedding, top_k)
+        return corpus_idx.tolist()[0], inner_product.tolist()[0]
+
+
 
 def retrieve_step(query: str, corpus, top_k: int, retriever: DocumentRetriever, dataset: str):
     doc_ids, scores = retriever.rank_docs(query, top_k=top_k)
@@ -92,8 +136,10 @@ def retrieve_step(query: str, corpus, top_k: int, retriever: DocumentRetriever, 
         for doc_id in doc_ids:
             key = list(corpus.keys())[doc_id]
             retrieved_passages.append(key + '\n' + ''.join(corpus[key]))
-    elif dataset in ['musique', '2wikimultihopqa', 'nq_rear', 'popqa']:
+    elif dataset in ['musique', '2wikimultihopqa', 'nq_rear', 'popqa', 'narrativeqa_dev_10_doc']:
         retrieved_passages = [corpus[doc_id]['title'] + '\n' + corpus[doc_id]['text'] for doc_id in doc_ids]
+    elif dataset in ['multihoprag', 'multihoprag_chunks']:
+        retrieved_passages = [corpus[doc_id]['text'] for doc_id in doc_ids]
     else:
         raise NotImplementedError(f'Dataset {dataset} not implemented')
     return retrieved_passages, scores
@@ -191,8 +237,10 @@ class IterRetGen:
         # Check if the sample has already been processed
         if args.dataset in ['hotpotqa', '2wikimultihopqa']:
             sample_id = sample['_id']
-        elif args.dataset in ['musique', 'nq_rear', 'popqa']:
+        elif args.dataset in ['musique', 'nq_rear', 'popqa', 'multihoprag', 'multihoprag_chunks']:
             sample_id = sample['id']
+        elif args.dataset in ['narrativeqa_dev_10_doc']:
+            sample_id = None
         else:
             raise NotImplementedError(f'Dataset {args.dataset} not implemented')
         
@@ -201,11 +249,19 @@ class IterRetGen:
         
         
         # Perform retrieval and reasoning steps
-        query = sample['question']
-        docs, scores = retrieve_step(query, corpus, self.topk, self.retriever, args.dataset)
-        
+        try:
+            if sample.get('question', None):
+                query = sample['question'] 
+            else:
+                query = sample['query'] 
+        except Exception as e:
+            print(e)
+        try:
+            docs, scores = retrieve_step(query, corpus, self.topk, self.retriever, args.dataset)
+        except Exception as e:
+            print("[retrieve_step error]: ", e)
         # 模仿IRCOT进行增量添加文档
-        retrieved_passages_dict = {passage: score for passage, score in zip(docs, scores)}
+        # retrieved_passages_dict = {passage: score for passage, score in zip(docs, scores)}
         
         thoughts = []
         
@@ -268,34 +324,55 @@ class IterRetGen:
             docs = new_docs
             
         # calculate recall
-        if args.dataset in ['hotpotqa']:
-            gold_passages = [item for item in sample['supporting_facts']]
-            gold_items = set([item[0] for item in gold_passages])
-            retrieved_items = [passage.split('\n')[0].strip() for passage in docs]
-        elif args.dataset in ['musique']:
-            gold_passages = [item for item in sample['paragraphs'] if item['is_supporting']]
-            gold_items = set([item['title'] + '\n' + item['paragraph_text'] for item in gold_passages])
-            retrieved_items = docs
-        elif args.dataset in ['2wikimultihopqa']:
-            gold_passages = [item for item in sample['supporting_facts']]
-            gold_items = set([item[0] for item in gold_passages])
-            retrieved_items = [passage.split('\n')[0].strip() for passage in docs]
-        elif args.dataset in ['nq_rear']:
-            gold_passages = [item for item in sample['contexts'] if item['is_supporting']]
-            gold_items = set([item['title'] + '\n' + item['text'] for item in gold_passages])
-            retrieved_items = docs
-        elif args.dataset in ['popqa']:
-            gold_passages = [item for item in sample['paragraphs'] if item['is_supporting']]
-            gold_items = set([item['title'] + '\n' + item['text'] for item in gold_passages])
-            retrieved_items = docs
-        else:
-            raise NotImplementedError(f'Dataset {args.dataset} not implemented')
-        recall = dict()
-        print(f'idx: {idx + 1} ', end='')
-        for k in self.k_list:
-            recall[k] = sum(1 for t in gold_items if t in retrieved_items[:k]) / len(gold_items)
-        
-        elapsed_time = time.time() - start_time 
+        try:
+            if args.dataset in ['hotpotqa']:
+                gold_passages = [item for item in sample['supporting_facts']]
+                gold_items = set([item[0] for item in gold_passages])
+                retrieved_items = [passage.split('\n')[0].strip() for passage in docs]
+            elif args.dataset in ['musique']:
+                gold_passages = [item for item in sample['paragraphs'] if item['is_supporting']]
+                gold_items = set([item['title'] + '\n' + item['paragraph_text'] for item in gold_passages])
+                retrieved_items = docs
+            elif args.dataset in ['2wikimultihopqa']:
+                gold_passages = [item for item in sample['supporting_facts']]
+                gold_items = set([item[0] for item in gold_passages])
+                retrieved_items = [passage.split('\n')[0].strip() for passage in docs]
+            elif args.dataset in ['nq_rear']:
+                gold_passages = [item for item in sample['contexts'] if item['is_supporting']]
+                gold_items = set([item['title'] + '\n' + item['text'] for item in gold_passages])
+                retrieved_items = docs
+            elif args.dataset in ['popqa']:
+                gold_passages = [item for item in sample['paragraphs'] if item['is_supporting']]
+                gold_items = set([item['title'] + '\n' + item['text'] for item in gold_passages])
+                retrieved_items = docs
+            # multihop-rag
+            elif args.dataset in ['multihoprag', 'multihoprag_chunks']:
+                gold_passages = [item for item in sample['evidence_list']]
+                gold_items = set([item['fact'] for item in gold_passages])
+                retrieved_items = docs
+            # narrativeqa_dev_10_doc
+            elif args.dataset in ['narrativeqa_dev_10_doc']:
+                gold_passages = [' ']
+                gold_items = [' ']
+                retrieved_items = docs
+            else:
+                raise NotImplementedError(f'Dataset {args.dataset} not implemented')
+            recall = dict()
+            print(f'idx: {idx + 1} ', end='')
+            for k in k_list:
+                if args.dataset in ['multihoprag', 'multihoprag_chunks']:
+                    recall[k] = round(
+                                    sum(
+                                        1 for gold in gold_items
+                                        if any(gold in retrieved for retrieved in retrieved_items[:k])
+                                    ) / len(gold_items), 4
+                                )
+                else:
+                    recall[k] = round(sum(1 for t in gold_items if t in retrieved_items[:k]) / len(gold_items), 4)
+            
+            elapsed_time = time.time() - start_time 
+        except Exception as e:
+                print("[calculate recall error, ", e)
         return idx, recall, docs, thoughts, total_tokens, elapsed_time
 
         
@@ -344,7 +421,7 @@ def parse_args():
     parser.add_argument(
         "--dataset",
         type=str,
-        choices=["hotpotQA", "musique", "2WikiMQA", "nq_rear", "popqa"],
+        choices=["hotpotQA", "musique", "2WikiMQA", "nq_rear", "popqa", 'multihoprag', 'multihoprag_chunks'],
         default="musique",
     )
     parser.add_argument("--split", type=str, default="demo")
@@ -358,7 +435,7 @@ def parse_args():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, choices=['hotpotqa', 'musique', '2wikimultihopqa', 'nq_rear', 'popqa'], required=True)
+    parser.add_argument('--dataset', type=str, choices=['hotpotqa', 'musique', '2wikimultihopqa', 'nq_rear', 'popqa', 'multihoprag', 'multihoprag_chunks', 'narrativeqa_dev_10_doc'], required=True)
     parser.add_argument('--llm', type=str, default='openai', help="LLM, e.g., 'openai' or 'together'")
     parser.add_argument('--llm_model', type=str, default='gpt-4o-mini')
     parser.add_argument('--retriever', type=str, default='facebook/contriever')
@@ -400,6 +477,16 @@ if __name__ == "__main__":
         corpus = json.load(open('data/popqa_corpus.json', 'r'))
         prompt_template = prompts.ITER_RETGEN_WIKIMQA_PROMPT  # 复用提示词
         max_steps = args.max_steps if args.max_steps is not None else 2
+    elif args.dataset == 'multihoprag' or args.dataset == 'multihoprag_chunks':
+        data = json.load(open(f'data/{args.dataset}.json', 'r'))
+        corpus = json.load(open(f'data/{args.dataset}_corpus.json', 'r'))
+        prompt_template = prompts.ITER_RETGEN_WIKIMQA_PROMPT  # 复用提示词
+        max_steps = args.max_steps if args.max_steps is not None else 2
+    elif args.dataset == 'narrativeqa_dev_10_doc':
+        data = json.load(open(f'data/{args.dataset}.json', 'r'))
+        corpus = json.load(open(f'data/{args.dataset}_corpus.json', 'r'))
+        prompt_template = prompts.ITER_RETGEN_WIKIMQA_PROMPT  # 复用提示词
+        max_steps = args.max_steps if args.max_steps is not None else 2
     else:
         raise NotImplementedError(f'Dataset {args.dataset} not implemented')
     
@@ -417,8 +504,9 @@ if __name__ == "__main__":
             faiss_index = faiss.read_index('data/nq_rear/nq_rear_facebook_contriever_ip_norm.index')
         elif args.dataset == 'popqa':
             faiss_index = faiss.read_index('data/popqa/popqa_facebook_contriever_ip_norm.index')
+        elif args.dataset == 'multihoprag' or args.dataset == 'multihoprag_chunks':
+            faiss_index = faiss.read_index(f'data/{args.dataset}/{args.dataset}_facebook_contriever_ip_norm.index')
         retriever = DPRRetriever(args.retriever, faiss_index, corpus)
-    
 
     elif args.retriever == 'BAAI/bge-m3':  # 
         if args.dataset == 'hotpotqa':
@@ -431,8 +519,30 @@ if __name__ == "__main__":
             faiss_index = faiss.read_index('data/nq_rear/nq_rear_BAAI_bge-m3_ip_norm.index')
         elif args.dataset == 'popqa':
             faiss_index = faiss.read_index('data/popqa/popqa_BAAI_bge-m3_ip_norm.index')
+        elif args.dataset == 'multihoprag' or args.dataset == 'multihoprag_chunks':
+            faiss_index = faiss.read_index(f'data/{args.dataset}/{args.dataset}_BAAI_bge-m3_ip_norm.index')
         retriever = SentenceTransformersRetriever(args.retriever, faiss_index, corpus)
-
+    # large embedding model
+    elif args.retriever.startswith('Alibaba-NLP/gte-Qwen2-7B-instruct'):
+        if args.dataset == 'hotpotqa':
+            faiss_index = faiss.read_index('data/hotpotqa/hotpotqa_Alibaba-NLP_gte-Qwen2-7B-instruct_ip_norm.index')
+        elif args.dataset == 'musique':
+            faiss_index = faiss.read_index('data/musique/musique_Alibaba-NLP_gte-Qwen2-7B-instruct_ip_norm.index')
+        elif args.dataset == '2wikimultihopqa':
+            faiss_index = faiss.read_index('data/2wikimultihopqa/2wikimultihopqa_Alibaba-NLP_gte-Qwen2-7B-instruct_ip_norm.index')
+        retriever = LMRetriever(args.retriever, faiss_index, corpus)
+    elif args.retriever.startswith('nvidia/NV-Embed-v2'):
+        if args.dataset == 'hotpotqa':
+            faiss_index = faiss.read_index('data/hotpotqa/hotpotqa_nvidia_NV-Embed-v2_ip_norm.index')
+        elif args.dataset == 'musique':
+            faiss_index = faiss.read_index('data/musique/musique_nvidia_NV-Embed-v2_ip_norm.index')
+        elif args.dataset == '2wikimultihopqa':
+            faiss_index = faiss.read_index('data/2wikimultihopqa/2wikimultihopqa_nvidia_NV-Embed-v2_ip_norm.index')
+        elif args.dataset == 'narrativeqa_dev_10_doc':
+            faiss_index = faiss.read_index('data/narrativeqa_dev_10_doc/narrativeqa_dev_10_doc_nvidia_NV-Embed-v2_ip_norm.index')
+        retriever = LMRetriever(args.retriever, faiss_index, corpus)
+    
+    
     k_list = [1, 2, 5, 10, 15, 20, 30, 50, 100]
     total_recall = {k: 0 for k in k_list}
     
@@ -448,8 +558,10 @@ if __name__ == "__main__":
                     read_existing_data = True
         if args.dataset in ['hotpotqa', '2wikimultihopqa']:
             processed_ids = {sample['_id'] for sample in results if 'retrieved' in sample}
-        elif args.dataset in ['musique', 'nq_rear', 'popqa']:
+        elif args.dataset in ['musique', 'nq_rear', 'popqa', 'multihoprag', 'multihoprag_chunks']:
             processed_ids = {sample['id'] for sample in results if 'retrieved' in sample}
+        elif args.dataset in ['narrativeqa_dev_10_doc']:
+            processed_ids = {}
         else:
             raise NotImplementedError(f'Dataset {args.dataset} not implemented')
         for sample in results:

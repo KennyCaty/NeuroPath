@@ -49,6 +49,12 @@ if __name__ == '__main__':
     elif args.dataset == 'popqa':
         corpus = json.load(open('data/popqa_corpus.json', 'r'))
         corpus_contents = [item['title'] + '\n' + item['text'] for item in corpus]
+    elif args.dataset == 'multihoprag':
+        corpus = json.load(open('data/multihoprag_corpus.json', 'r'))
+        corpus_contents = [item['title'] + '\n' + item['text'] for item in corpus]
+    elif args.dataset == 'multihoprag_chunks':
+        corpus = json.load(open('data/multihoprag_chunks_corpus.json', 'r'))
+        corpus_contents = [item['title'] + '\n' + item['text'] for item in corpus]
 
 
     print('corpus size: {}'.format(len(corpus_contents)))
