@@ -105,6 +105,10 @@ python src/baselines/iter-retgen.py --dataset nq_rear --retriever facebook/contr
 # PopQA
 python src/baselines/mean_pooling_ip_faiss.py --dataset popqa --model facebook/contriever
 python src/baselines/iter-retgen.py --dataset popqa --retriever facebook/contriever --max_steps 3 --top_k 5 --llm_model gpt-4o-mini
+
+# MultiHop-RAG
+python src/baselines/mean_pooling_ip_faiss.py --dataset multihoprag_chunks --model facebook/contriever
+python src/baselines/iter-retgen.py --dataset multihoprag_chunks --retriever facebook/contriever --max_steps 3 --top_k 5 --llm_model gpt-4o-mini
 ```
 
 
@@ -120,6 +124,10 @@ python src/baselines/iter-retgen.py --dataset 2wikimultihopqa --retriever BAAI/b
 # hotpot
 python src/baselines/create_index_bge.py --dataset hotpotqa --model BAAI/bge-m3 --dim 1024
 python src/baselines/iter-retgen.py --dataset hotpotqa --retriever BAAI/bge-m3 --max_steps 3 --top_k 5 --llm_model gpt-4o-mini
+
+# MultiHop-RAG
+python src/baselines/create_index_bge.py --dataset multihoprag_chunks --model BAAI/bge-m3 --dim 1024
+python src/baselines/iter-retgen.py --dataset multihoprag_chunks --retriever BAAI/bge-m3 --max_steps 3 --top_k 5 --llm_model gpt-4o-mini
 ```
 
 
@@ -171,6 +179,10 @@ python src/baselines/ircot_246.py --dataset nq_rear --retriever facebook/contrie
 # popqa
 python src/baselines/mean_pooling_ip_faiss.py --dataset popqa --model facebook/contriever
 python src/baselines/ircot_246.py --dataset popqa --retriever facebook/contriever --max_steps 3 --num_demo 1 --llm_model gpt-4o-mini
+
+# MultiHop-RAG
+python src/baselines/mean_pooling_ip_faiss.py --dataset multihoprag_chunks --model facebook/contriever
+python src/baselines/ircot_246.py --dataset multihoprag_chunks --retriever facebook/contriever --max_steps 3 --num_demo 1  --llm_model gpt-4o-mini
 ```
 
 
@@ -188,6 +200,10 @@ python src/baselines/ircot_246.py --dataset 2wikimultihopqa --retriever BAAI/bge
 # HotpotQA
 python src/baselines/create_index_bge.py --dataset hotpotqa --model BAAI/bge-m3
 python src/baselines/ircot_246.py --dataset hotpotqa --retriever BAAI/bge-m3 --max_steps 3 --num_demo 1 --llm_model gpt-4o-mini
+
+# MultiHop-RAG
+python src/baselines/create_index_bge.py --dataset multihoprag_chunks --model BAAI/bge-m3
+python src/baselines/ircot_246.py --dataset multihoprag_chunks --retriever BAAI/bge-m3 --max_steps 3 --num_demo 1  --llm_model gpt-4o-mini
 ```
 
 
