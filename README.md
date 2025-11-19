@@ -1,6 +1,6 @@
 # NeuroPath: Neurobiology-Inspired Path Tracking and Reflection for Semantically Coherent Retrieval
 
-Official repo of NeurIPS 2025 paper: [NeuroPath: Neurobiology-Inspired Path Tracking and Reflection for Semantically Coherent Retrieval](https://openreview.net/forum?id=vpp3FGNLi6)
+Official repo of NeurIPS 2025 paper: [NeuroPath: Neurobiology-Inspired Path Tracking and Reflection for Semantically Coherent Retrieval](https://arxiv.org/abs/2511.14096)
 
 ## Setup
 ```shell
