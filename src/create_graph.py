@@ -1,5 +1,3 @@
-import copy
-
 import pandas as pd
 from scipy.sparse import csr_array
 from processing import *
@@ -99,56 +97,8 @@ def create_graph(dataset: str, extraction_type: str, index_llm_model: str, retri
 
     print('Correct Wiki Format: {} out of {}'.format(correct_wiki_format, len(extracted_triples)))
 
-    try:
-        queries_full = pd.read_csv('output/{}_queries.named_entity_output.tsv'.format(dataset), sep='\t')
-
-        if 'hotpotqa' in args.dataset:
-            queries = json.load(open(f'data/{args.dataset}.json', 'r'))
-            questions = [q['question'] for q in queries]
-            queries_full = queries_full.set_index('0', drop=False)
-        else:
-            queries_df = pd.read_json(f'data/{args.dataset}.json')
-            questions = queries_df['question'].values
-            queries_full = queries_full.set_index('question', drop=False)
-            queries_full = queries_full.loc[questions]
-
-        queries_full = queries_full.loc[questions]
-    except:
-        queries_full = pd.DataFrame([], columns=['question', 'triples'])
-    q_entities = []
-    q_entities_by_doc = []
-    for doc_ents in tqdm(queries_full.triples):
-        doc_ents = eval(doc_ents)['named_entities']
-        try:
-            clean_doc_ents = [processing_phrases(p) for p in doc_ents]
-        except:
-            clean_doc_ents = []
-        q_entities.extend(clean_doc_ents)
-        q_entities_by_doc.append(clean_doc_ents)
     unique_phrases = list(np.unique(entities))
     unique_relations = np.unique(list(relations.values()) + ['equivalent'])
-    q_phrases = list(np.unique(q_entities))
-    all_phrases = copy.deepcopy(unique_phrases)
-    all_phrases.extend(q_phrases)
-    
-    kb = pd.DataFrame(unique_phrases, columns=['strings'])
-    kb2 = copy.deepcopy(kb)
-    kb['type'] = 'query'
-    kb2['type'] = 'kb'
-    kb_full = pd.concat([kb, kb2])
-    kb_full.to_csv('output/kb_to_kb.tsv', sep='\t')
-    rel_kb = pd.DataFrame(unique_relations, columns=['strings'])
-    rel_kb2 = copy.deepcopy(rel_kb)
-    rel_kb['type'] = 'query'
-    rel_kb2['type'] = 'kb'
-    rel_kb_full = pd.concat([rel_kb, rel_kb2])
-    rel_kb_full.to_csv('output/rel_kb_to_kb.tsv', sep='\t')
-    query_df = pd.DataFrame(q_phrases, columns=['strings'])
-    query_df['type'] = 'query'
-    kb['type'] = 'kb'
-    kb_query = pd.concat([kb, query_df])
-    kb_query.to_csv('output/query_to_kb.tsv', sep='\t')
-
 
     if create_graph_flag:
         print('Creating Graph')
