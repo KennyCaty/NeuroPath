@@ -97,35 +97,6 @@ class SentenceTransformersRetriever(DocumentRetriever):
         return corpus_idx.tolist()[0], inner_product.tolist()[0]
 
 
-class Colbertv2Retriever(DocumentRetriever):
-    def __init__(self, root: str, index_name: str):
-        self.root = root
-        self.index_name = index_name
-        from colbert.infra import Run
-        from colbert.infra import RunConfig
-        from colbert import Searcher
-        from colbert.infra import ColBERTConfig
-
-        with Run().context(RunConfig(nranks=1, experiment="colbert", root=self.root)):
-            config = ColBERTConfig(
-                root=self.root.rstrip('/') + '/colbert',
-            )
-            self.searcher = Searcher(index=self.index_name, config=config)
-
-    def rank_docs(self, query: str, top_k: int):
-        from colbert.data import Queries
-
-        ids = []
-        scores = []
-        queries = Queries(path=None, data={0: query})
-        ranking = self.searcher.search_all(queries, k=top_k)
-
-        for docid, rank, score in ranking.data[0]:
-            ids.append(docid)
-            scores.append(score)
-        return ids, scores
-
-
 def parse_prompt(file_path: str, has_context=True):
     with open(file_path, 'r', encoding='utf-8') as file:
         content = file.read()
@@ -365,7 +336,6 @@ if __name__ == '__main__':
 
     retriever_name = args.retriever.replace('/', '_').replace('.', '_')
     client = init_langchain_model(args.llm, args.llm_model)
-    colbert_configs = {'root': f'data/lm_vectors/colbertv2/{args.dataset}', 'doc_index_name': 'nbits_2', 'phrase_index_name': 'nbits_2'}
 
     # load dataset and corpus
     if args.dataset == 'hotpotqa':
@@ -412,17 +382,6 @@ if __name__ == '__main__':
 
     if args.retriever == 'bm25':
         retriever = BM25Retriever(index_name=f'{args.dataset}_{len(corpus)}_bm25')
-    elif args.retriever == 'colbertv2':
-        if args.dataset == 'hotpotqa':
-            root = 'exp/hotpotqa'
-            index_name = 'hotpotqa_1000_nbits_2'
-        elif args.dataset == 'musique':
-            root = 'exp/musique'
-            index_name = 'musique_1000_nbits_2'
-        elif args.dataset == '2wikimultihopqa':
-            root = 'exp/2wikimultihopqa'
-            index_name = '2wikimultihopqa_1000_nbits_2'
-        retriever = Colbertv2Retriever(root, index_name)
     elif args.retriever == 'facebook/contriever':
         if args.dataset == 'hotpotqa':
             faiss_index = faiss.read_index('data/hotpotqa/hotpotqa_facebook_contriever_ip_norm.index')
