@@ -32,8 +32,20 @@ All datasets used in the experiments are stored in the `data` directory, includi
 ### Optional environment variables configuration
 ```shell
 export HF_HOME="your_hf_home_path"
+
+# Default credentials (used when role-specific ones are not set)
 export OPENAI_API_KEY="your_api_key"
 export OPENAI_BASE_URL="your_base_url" # default: https://api.openai.com/v1
+
+# Optional: use different endpoints for indexing and retrieval/QA.
+# NeuroPath separates LLMs into two roles:
+#   - index_llm: used by OpenIE / Query NER to build graph files (paths are keyed on index_llm_model).
+#   - rag_llm:   used at retrieval time for path tracking and at QA time for answering.
+# If unset, both fall back to OPENAI_API_KEY / OPENAI_BASE_URL.
+# export INDEX_LLM_API_KEY="..."
+# export INDEX_LLM_BASE_URL="..."
+# export RAG_LLM_API_KEY="..."
+# export RAG_LLM_BASE_URL="..."
 
 # To avoid network issues when connecting to Hugging Face, we recommend downloading the model in advance and using it in local mode.
 export TRANSFORMERS_OFFLINE=1  # Optional 
