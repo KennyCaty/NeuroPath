@@ -100,7 +100,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str)
     parser.add_argument('--llm', type=str, default='openai', help="LLM, e.g., 'openai' or 'together'")
-    parser.add_argument('--model_name', type=str, default='gpt-3.5-turbo-1106', help='Specific model name')
+    parser.add_argument('--model_name', type=str, default='gpt-4o-mini', help='Specific model name')
     parser.add_argument('--num_processes', type=int, default=8, help='Number of processes')
 
     args = parser.parse_args()
