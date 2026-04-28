@@ -237,7 +237,6 @@ def reason_step(dataset, few_shot: list, query: str, passages: list, thoughts: l
     try:
         chat_completion = client.invoke(messages.to_messages())
         response_content = chat_completion.content
-        # 增加token计算
         total_tokens = chat_completion.response_metadata['token_usage']['total_tokens']
     except Exception as e:
         print(e)
@@ -247,7 +246,7 @@ def reason_step(dataset, few_shot: list, query: str, passages: list, thoughts: l
 
 
 def process_sample(idx, sample, args, corpus, retriever, client, processed_ids):
-    start_time = time.time()  # 记录开始时间
+    start_time = time.time()
     # Check if the sample has already been processed
     if args.dataset in ['hotpotqa', '2wikimultihopqa']:
         sample_id = sample['_id']
@@ -259,30 +258,25 @@ def process_sample(idx, sample, args, corpus, retriever, client, processed_ids):
     if sample_id in processed_ids:
         return  # Skip already processed samples
 
-    # 是否IRCOT
+    # IRCOT (multi-step) branch
     if max_steps > 1:
-        iter_k = 2 # 2, 4, 6 
+        iter_k = 2  # start with 2, expand by 2 each step
         # Perform retrieval and reasoning steps
         query = sample['question']
-        # retrieved_passages, scores = retrieve_step(query, corpus, args.top_k, retriever, args.dataset)
         retrieved_passages, scores = retrieve_step(query, corpus, iter_k, retriever, args.dataset)
 
         thoughts = []
         retrieved_passages_dict = {passage: score for passage, score in zip(retrieved_passages, scores)}
         it = 1
-        # 增加token计算
         total_tokens = 0
         for it in range(1, max_steps):
-            # print("ITER： ", it)
-            # new_thought, tokens = reason_step(args.dataset, few_shot_samples, query, retrieved_passages[:args.top_k], thoughts, client)
             new_thought, tokens = reason_step(args.dataset, few_shot_samples, query, retrieved_passages, thoughts, client)
             total_tokens += tokens
             thoughts.append(new_thought)
             if 'So the answer is:' in new_thought:
                 break
-            # 增加迭代检索次数
+            # bump retrieval k for the next iteration
             iter_k += 2
-            # new_retrieved_passages, new_scores = retrieve_step(new_thought, corpus, args.top_k, retriever, args.dataset)
             new_retrieved_passages, new_scores = retrieve_step(new_thought, corpus, iter_k, retriever, args.dataset)
 
             for passage, score in zip(new_retrieved_passages, new_scores):
@@ -353,7 +347,7 @@ def process_sample(idx, sample, args, corpus, retriever, client, processed_ids):
                         )
         else:
             recall[k] = round(sum(1 for t in gold_items if t in retrieved_items[:k]) / len(gold_items), 4)
-    elapsed_time = time.time() - start_time  # 记录结束时间并计算耗时
+    elapsed_time = time.time() - start_time
     return idx, recall, retrieved_passages, thoughts, it, total_tokens, elapsed_time
 
 
@@ -363,7 +357,6 @@ if __name__ == '__main__':
     parser.add_argument('--llm', type=str, default='openai', help="LLM, e.g., 'openai' or 'together'")
     parser.add_argument('--llm_model', type=str, default='gpt-3.5-turbo-1106')
     parser.add_argument('--retriever', type=str, default='facebook/contriever')
-    parser.add_argument('--prompt', type=str)
     parser.add_argument('--num_demo', type=int, default=1, help='the number of documents in the demonstration', required=True)
     parser.add_argument('--max_steps', type=int)
     parser.add_argument('--top_k', type=int, default=8, help='retrieving k documents at each step')
@@ -411,13 +404,11 @@ if __name__ == '__main__':
     few_shot_samples = few_shot_samples[:args.num_demo]
     print('num of demo:', len(few_shot_samples))
 
-    # doc_ensemble_str = 'doc_ensemble' if doc_ensemble else 'no_ensemble'
-    doc_ensemble_str = ''
     if max_steps > 1:
-        output_path = f'output/ircot/{args.dataset}_{retriever_name}_demo_{args.num_demo}_{args.llm_model}_{doc_ensemble_str}_step_{max_steps}_top_{args.top_k}.json'
+        output_path = f'output/ircot/{args.dataset}_{retriever_name}_demo_{args.num_demo}_{args.llm_model}_step_{max_steps}_top_{args.top_k}.json'
     else:  # only one step
         args.top_k = 100
-        output_path = f'output/{args.dataset}_{retriever_name}_{doc_ensemble_str}.json'
+        output_path = f'output/{args.dataset}_{retriever_name}.json'
 
     if args.retriever == 'bm25':
         retriever = BM25Retriever(index_name=f'{args.dataset}_{len(corpus)}_bm25')
@@ -455,7 +446,7 @@ if __name__ == '__main__':
             faiss_index = faiss.read_index('data/2wikimultihopqa/2wikimultihopqa_sentence-transformers_gtr-t5-base_ip_norm.index')
         retriever = SentenceTransformersRetriever(args.retriever, faiss_index, corpus)
 
-    elif args.retriever == 'BAAI/bge-m3':  # 新增
+    elif args.retriever == 'BAAI/bge-m3':
         if args.dataset == 'hotpotqa':
             faiss_index = faiss.read_index('data/hotpotqa/hotpotqa_BAAI_bge-m3_ip_norm.index')
         elif args.dataset == 'musique':
@@ -501,10 +492,10 @@ if __name__ == '__main__':
         print(f'All samples have been already in the result file ({output_path}), exit.')
         exit(0)
 
-    lock = Lock() # 保证修改变量的操作是原子的
-    total_processing_time = 0  # 总处理时间
-    valid_sample_count = 0     # 有效样本数量
-    total_tokens = 0           # 总消耗tokens
+    lock = Lock()  # ensure atomic state updates across threads
+    total_processing_time = 0
+    valid_sample_count = 0
+    total_tokens = 0
     
     with ThreadPoolExecutor(max_workers=args.thread) as executor:
         # Submit tasks to the executor
@@ -513,8 +504,8 @@ if __name__ == '__main__':
         for future in tqdm(concurrent.futures.as_completed(futures), total=len(data), desc='Parallel IRCoT'):
             idx, recall, retrieved_passages, thoughts, it, tokens, elapsed_time = future.result()
             with lock:
-                total_processing_time += elapsed_time  # 计算时间
-                total_tokens += tokens # 计算tokens
+                total_processing_time += elapsed_time
+                total_tokens += tokens
                 valid_sample_count += 1
             # print metrics
             for k in k_list:
@@ -532,7 +523,6 @@ if __name__ == '__main__':
             if idx % 50 == 0:
                 with open(output_path, 'w') as f:
                     json.dump(results, f)
-        # 打印总时间和平均时间
         print(f"Total processing time: {total_processing_time:.4f} seconds")
         print(f"Average processing time per sample: {total_processing_time/valid_sample_count:.4f} seconds")
         print(f"Total tokens: {total_tokens} tokens")
