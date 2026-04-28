@@ -400,7 +400,7 @@ class IterRetGen:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, choices=['hotpotqa', 'musique', '2wikimultihopqa', 'nq_rear', 'popqa', 'multihoprag', 'multihoprag_chunks', 'narrativeqa_dev_10_doc'], required=True)
-    parser.add_argument('--llm', type=str, default='openai', help="LLM, e.g., 'openai' or 'together'")
+    parser.add_argument('--llm', type=str, default='openai', help="LLM provider (only 'openai' is supported; use an OpenAI-compatible base_url for vLLM/Ollama).")
     parser.add_argument('--llm_model', type=str, default='gpt-4o-mini')
     parser.add_argument('--retriever', type=str, default='facebook/contriever')
     parser.add_argument('--max_steps', type=int)
