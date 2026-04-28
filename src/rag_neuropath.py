@@ -9,7 +9,7 @@ import ipdb
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.langchain_util import init_langchain_model
+from src.langchain_util import init_langchain_model  # kept for side effects and downstream re-imports
 from transformers.hf_argparser import string_to_bool
 import argparse
 import json
@@ -116,8 +116,14 @@ def reason_step(dataset, few_shot: list, query: str, passages: list, thoughts: l
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str)
-    parser.add_argument('--llm', type=str, default='openai', help="LLM, e.g., 'openai' or 'together'")
-    parser.add_argument('--llm_model', type=str, default='gpt-4o-mini', help='Specific model name')
+    parser.add_argument('--index_llm', type=str, default='openai',
+                        help="provider of the LLM used for indexing. Only used for locating index files (paths are keyed on index_llm_model).")
+    parser.add_argument('--index_llm_model', type=str, default='gpt-4o-mini',
+                        help='name of the LLM used for indexing; must match the model that produced the graph files.')
+    parser.add_argument('--rag_llm', type=str, default='openai',
+                        help="provider of the LLM used at retrieval time (path tracking / query NER).")
+    parser.add_argument('--rag_llm_model', type=str, default='gpt-4o-mini',
+                        help='name of the LLM used at retrieval time.')
     parser.add_argument('--retriever', type=str, default='facebook/contriever')
     parser.add_argument('--max_hop', type=int, default=2)
     parser.add_argument('--top_k', type=int, default=10, help='retrieving k documents at each step')
@@ -131,17 +137,17 @@ if __name__ == '__main__':
     dpr_only = string_to_bool(args.dpr_only)
     one_shot = string_to_bool(args.one_shot)
 
-    client = init_langchain_model(args.llm, args.llm_model)
-    llm_model_name_processed = args.llm_model.replace('/', '_').replace('.', '_')
-    colbert_configs = {'root': f'data/lm_vectors/colbert/{args.dataset}', 'doc_index_name': 'nbits_2', 'phrase_index_name': 'nbits_2'}
+    rag_llm_model_processed = args.rag_llm_model.replace('/', '_').replace('.', '_')
 
-    # graph_type='facts'
-    rag = NeuroPath(args.dataset, args.llm, args.llm_model, args.retriever, node_specificity=not (args.wo_node_spec), graph_type='facts',
-                   colbert_config=colbert_configs, dpr_only=dpr_only, graph_alg=args.graph_alg, max_hop=args.max_hop)
+    rag = NeuroPath(args.dataset,
+                    index_llm=args.index_llm, index_llm_model=args.index_llm_model,
+                    rag_llm=args.rag_llm, rag_llm_model=args.rag_llm_model,
+                    graph_creating_retriever_name=args.retriever,
+                    node_specificity=not (args.wo_node_spec), graph_type='facts',
+                    dpr_only=dpr_only, graph_alg=args.graph_alg, max_hop=args.max_hop)
 
     data = json.load(open(f'data/{args.dataset}.json', 'r'))
     corpus = json.load(open(f'data/{args.dataset}_corpus.json', 'r'))
-
 
     if dpr_only:
         dpr_only_str = 'dpr_only'
@@ -149,9 +155,9 @@ if __name__ == '__main__':
         dpr_only_str = 'neuropath'
 
     if args.graph_alg == 'kg_path':
-        output_path = f'output/retrieved/retrieved_results_{args.dataset}_{dpr_only_str}_{rag.graph_creating_retriever_name_processed}_{llm_model_name_processed}_top_{args.top_k}'
+        output_path = f'output/retrieved/retrieved_results_{args.dataset}_{dpr_only_str}_{rag.graph_creating_retriever_name_processed}_{rag_llm_model_processed}_top_{args.top_k}'
     else:
-        output_path = f'output/retrieved/retrieved_results_{args.dataset}_{dpr_only_str}_{rag.graph_creating_retriever_name_processed}_{llm_model_name_processed}_top_{args.top_k}_{args.graph_alg}'
+        output_path = f'output/retrieved/retrieved_results_{args.dataset}_{dpr_only_str}_{rag.graph_creating_retriever_name_processed}_{rag_llm_model_processed}_top_{args.top_k}_{args.graph_alg}'
 
     if args.wo_node_spec:
         output_path += 'wo_node_spec'
@@ -206,10 +212,7 @@ if __name__ == '__main__':
 
     # ========= multi-thread retrieval ==========
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    # load previously extracted KG info
-    with open(glob(f"output/openie_{args.dataset}_results_ner_{args.llm_model}_*.json")[0], 'r') as f:
-        openie = json.load(f)['docs']
-    
+
     def process_sample(sample, processed_ids, args, corpus, rag, k_list):
         """Per-sample processing logic"""
         
