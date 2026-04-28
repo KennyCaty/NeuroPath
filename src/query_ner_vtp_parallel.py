@@ -83,7 +83,7 @@ def ner_vtp_extraction(client, text: str):
 
 
 def run_ner_vtp_on_texts(texts):
-    client = init_langchain_model('openai', "gpt-4o-mini")  # LangChain model
+    client = init_langchain_model('openai', "gpt-4o-mini", role='index')  # LangChain model
     outputs = []
     total_cost = 0
 
@@ -110,7 +110,7 @@ if __name__ == '__main__':
 
     output_file = 'output/{}_queries.named_entity_output.tsv'.format(dataset)
 
-    client = init_langchain_model(args.llm, model_name)  # LangChain model
+    client = init_langchain_model(args.llm, model_name, role='index')  # LangChain model
 
     try:
         queries_df = pd.read_json(f'data/{dataset}.json')
