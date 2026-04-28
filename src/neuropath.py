@@ -2,20 +2,17 @@ import json
 import logging
 import os
 import _pickle as pickle
-from collections import defaultdict
 from glob import glob
 
-import igraph as ig
 import numpy as np
 import pandas as pd
 import torch
-from tqdm import tqdm
 
-from src.langchain_util import init_langchain_model, LangChainModel
+from src.langchain_util import init_langchain_model
 from src.lm_wrapper.util import init_embedding_model
 from src.query_ner_vtp_parallel import  ner_vtp_extraction
-from src.processing import processing_phrases, min_max_normalize
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from src.processing import processing_phrases
+from langchain_core.messages import HumanMessage, SystemMessage
 
 import time
 
@@ -47,9 +44,9 @@ def extract_json_dict(text):
 class NeuroPath:
 
     def __init__(self, corpus_name='hotpotqa', extraction_model='openai', extraction_model_name='gpt-4o-mini',
-                 graph_creating_retriever_name='facebook/contriever', extraction_type='ner', graph_type='facts', sim_threshold=0.8, node_specificity=True,
-                 colbert_config=None, dpr_only=False, graph_alg='kg_path', corpus_path=None,
-                 qa_model: LangChainModel = None, linking_retriever_name=None, max_hop=2):
+                 graph_creating_retriever_name='facebook/contriever', extraction_type='ner', graph_type='facts', node_specificity=True,
+                 dpr_only=False, graph_alg='kg_path', corpus_path=None,
+                 linking_retriever_name=None, max_hop=2):
 
         self.max_hop = max_hop
         self.corpus_name = corpus_name
@@ -59,7 +56,7 @@ class NeuroPath:
         assert graph_creating_retriever_name
         if linking_retriever_name is None:
             linking_retriever_name = graph_creating_retriever_name
-        self.graph_creating_retriever_name = graph_creating_retriever_name  # 'colbertv2', 'facebook/contriever', or other HuggingFace models 
+        self.graph_creating_retriever_name = graph_creating_retriever_name
         self.graph_creating_retriever_name_processed = graph_creating_retriever_name.replace('/', '_').replace('.', '')
         self.linking_retriever_name = linking_retriever_name
         self.linking_retriever_name_processed = linking_retriever_name.replace('/', '_').replace('.', '')
@@ -67,13 +64,7 @@ class NeuroPath:
         self.extraction_type = extraction_type
         self.graph_type = graph_type
         self.phrase_type = 'ents_only_lower_preprocess'
-        self.sim_threshold = sim_threshold
         self.node_specificity = node_specificity
-        if colbert_config is None:
-            self.colbert_config = {'root': f'data/lm_vectors/colbert/{corpus_name}',
-                                   'doc_index_name': 'nbits_2', 'phrase_index_name': 'nbits_2'}
-        else:
-            self.colbert_config = colbert_config  # a dict, 'root', 'doc_index_name', 'phrase_index_name'
 
         self.graph_alg = graph_alg
 
@@ -103,23 +94,17 @@ class NeuroPath:
         if not self.dpr_only:
             self.load_index_files()
 
-            # Construct Graph
-            self.build_graph()
-
             # Loading Node Embeddings
             self.load_node_vectors()
         else:
             self.load_corpus()
 
-        if (dpr_only or graph_alg=='kg_path') and self.linking_retriever_name not in ['colbertv2', 'bm25']:
+        if dpr_only or graph_alg == 'kg_path':
             # Loading Doc Embeddings
             self.get_dpr_doc_embedding()
 
         self.statistics = {}
         self.ensembling_debug = []
-        if qa_model is None:
-            qa_model = LangChainModel('openai', 'gpt-3.5-turbo')
-        self.qa_model = init_langchain_model(qa_model.provider, qa_model.model_name)
 
         # ===== Build phrase faiss index for pseudo-coreference resolution =====
         import faiss
@@ -670,16 +655,6 @@ Paths:\n"""
         # phrase_to_doc_mat: given a phrase id, fetch all doc ids containing it
         self.phrase_to_doc_mat = self.doc_to_phrases_mat.T
 
-        graph_file_path = 'output/{}_{}_graph_mean_{}_thresh_{}_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type,
-                                                                                          str(self.sim_threshold), self.phrase_type,
-                                                                                          self.extraction_type,
-                                                                                          self.graph_creating_retriever_name_processed,
-                                                                                          self.version)
-        if os.path.isfile(graph_file_path):
-            self.graph_plus = pickle.load(open(graph_file_path, 'rb'))  # (phrase1 id, phrase2 id) -> the number of occurrences
-        else:
-            self.logger.exception('Graph file not found: ' + graph_file_path)
-
     def get_phrases_in_doc_str(self, doc: str):
         # find doc id from self.dataset_df
         try:
@@ -692,41 +667,11 @@ Paths:\n"""
         except:
             return []
 
-    def build_graph(self):
-
-        edges = set()
-
-        new_graph_plus = {}
-        self.kg_adj_list = defaultdict(dict)
-        self.kg_inverse_adj_list = defaultdict(dict)
-
-        for edge, weight in tqdm(self.graph_plus.items(), total=len(self.graph_plus), desc='Building Graph'):
-            edge1 = edge[0]
-            edge2 = edge[1]
-
-            if (edge1, edge2) not in edges and edge1 != edge2:
-                new_graph_plus[(edge1, edge2)] = self.graph_plus[(edge[0], edge[1])]
-                edges.add((edge1, edge2))
-                self.kg_adj_list[edge1][edge2] = self.graph_plus[(edge[0], edge[1])]
-                self.kg_inverse_adj_list[edge2][edge1] = self.graph_plus[(edge[0], edge[1])]
-
-        self.graph_plus = new_graph_plus
-
-        edges = list(edges)
-
-        n_vertices = len(self.kb_node_phrase_to_id)
-        self.g = ig.Graph(n_vertices, edges)
-
-        self.g.es['weight'] = [self.graph_plus[(v1, v3)] for v1, v3 in edges]
-        self.logger.info(f'Graph built: num vertices: {n_vertices}, num_edges: {len(edges)}')
-
     def load_node_vectors(self):
         encoded_string_path = 'data/lm_vectors/{}_mean/encoded_strings.txt'.format(self.linking_retriever_name_processed)
         if os.path.isfile(encoded_string_path):
             self.load_node_vectors_from_string_encoding_cache(encoded_string_path)   # loads all KB node embeddings into self.kb_node_phrase_embeddings
         else:  # use another way to load node vectors
-            if self.linking_retriever_name == 'colbertv2':
-                return
             kb_node_phrase_embeddings_path = 'data/lm_vectors/{}_mean/{}_kb_node_phrase_embeddings.p'.format(self.linking_retriever_name_processed, self.corpus_name)
             if os.path.isfile(kb_node_phrase_embeddings_path):
                 self.kb_node_phrase_embeddings = pickle.load(open(kb_node_phrase_embeddings_path, 'rb'))
