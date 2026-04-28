@@ -143,9 +143,7 @@ class LMRetriever(DocumentRetriever):
     def rank_docs(self, query: str, top_k: int):
         try:
             query_embedding = self.model.encode(query, 
-                                                instruction = 'Given a question, retrieve relevant documents that best answer the question.'  # hippo2用于检索文档
-                                                # instruction = 'Given a question, retrieve passages that answer the question'
-                                                # instruction = 'Given a web search query, retrieve relevant passages that answer the query'
+                                                instruction = 'Given a question, retrieve relevant documents that best answer the question.'
                                                )
         except Exception as e:
             print("[encode error]", e)
@@ -382,7 +380,6 @@ if __name__ == '__main__':
     parser.add_argument('--llm', type=str, default='openai', help="LLM, e.g., 'openai' or 'together'")
     parser.add_argument('--llm_model', type=str, default='gpt-3.5-turbo-1106')
     parser.add_argument('--retriever', type=str, default='facebook/contriever')
-    parser.add_argument('--prompt', type=str)
     parser.add_argument('--num_demo', type=int, default=1, help='the number of documents in the demonstration', required=True)
     parser.add_argument('--max_steps', type=int)
     parser.add_argument('--top_k', type=int, default=100, help='retrieving k documents at each step')
@@ -430,13 +427,11 @@ if __name__ == '__main__':
     few_shot_samples = few_shot_samples[:args.num_demo]
     print('num of demo:', len(few_shot_samples))
 
-    # doc_ensemble_str = 'doc_ensemble' if doc_ensemble else 'no_ensemble'
-    doc_ensemble_str = ''
     if max_steps > 1:
-        output_path = f'output/ircot/{args.dataset}_{retriever_name}_demo_{args.num_demo}_{args.llm_model}_{doc_ensemble_str}_step_{max_steps}_top_{args.top_k}.json'
+        output_path = f'output/ircot/{args.dataset}_{retriever_name}_demo_{args.num_demo}_{args.llm_model}_step_{max_steps}_top_{args.top_k}.json'
     else:  # only one step
         args.top_k = 100
-        output_path = f'output/base_retriever/{args.dataset}_{retriever_name}_{doc_ensemble_str}.json'
+        output_path = f'output/base_retriever/{args.dataset}_{retriever_name}.json'
 
     if args.retriever == 'bm25':
         retriever = BM25Retriever(index_name=f'{args.dataset}_{len(corpus)}_bm25')
@@ -547,7 +542,6 @@ if __name__ == '__main__':
                 idx, recall, retrieved_passages, thoughts, it = future.result()
             except Exception as e:
                 print(f"[ERROR] Exception in thread: {e}")
-                # continue  # 跳过当前失败的线程任务
             
             print("retireved done")
             # print metrics
