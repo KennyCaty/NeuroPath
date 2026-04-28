@@ -14,23 +14,18 @@ import argparse
 os.environ['TOKENIZERS_PARALLELISM'] = 'FALSE'
 
 
-def create_graph(dataset: str, extraction_type: str, extraction_model: str, retriever_name: str, processed_retriever_name: str, threshold: float = 0.9,
-                 create_graph_flag: bool = False, cosine_sim_edges: bool = False):
+def create_graph(dataset: str, extraction_type: str, extraction_model: str, retriever_name: str, processed_retriever_name: str,
+                 create_graph_flag: bool = False):
     version = 'v3'
     inter_triple_weight = 1.0
-    similarity_max = 1.0
     possible_files = glob('output/openie_{}_results_{}_{}_*.json'.format(dataset, extraction_type, extraction_model))
     max_samples = np.max([int(file.split('{}_'.format(extraction_model))[1].split('.json')[0]) for file in possible_files])
     extracted_file = json.load(open('output/openie_{}_results_{}_{}_{}.json'.format(dataset, extraction_type, extraction_model, max_samples), 'r'))
 
     extracted_triples = extracted_file['docs']
-    # if extraction_model != 'gpt-4o-mini':
     extraction_type = extraction_type + '_' + extraction_model
-    phrase_type = 'ents_only_lower_preprocess'  # entities only, lower case, preprocessed
-    if cosine_sim_edges:
-        graph_type = 'facts_and_sim'  # extracted facts and similar phrases
-    else:
-        graph_type = 'facts'
+    phrase_type = 'ents_only_lower_preprocess'
+    graph_type = 'facts'
 
     passage_json = []
     phrases = []
@@ -244,74 +239,7 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
 
         pickle.dump(graph, open('output/{}_{}_graph_fact_doc_edges_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
 
-        print('Loading Vectors')
-
-        # Expanding OpenIE triples with cosine similarity-based synonymy edges
-        if cosine_sim_edges:
-            if 'colbert' in retriever_name:
-                kb_similarity = pickle.load(open('data/lm_vectors/colbert/nearest_neighbor_kb_to_kb.p'.format(processed_retriever_name), 'rb'))
-            else:
-                kb_similarity = pickle.load(open('data/lm_vectors/{}_mean/nearest_neighbor_kb_to_kb.p'.format(processed_retriever_name), 'rb'))
-
-            print('Augmenting Graph from Similarity')
-
-            graph_plus = copy.deepcopy(graph)
-
-            kb_similarity = {processing_phrases(k): v for k, v in kb_similarity.items()}
-
-            synonym_candidates = []
-
-            for phrase in tqdm(kb_similarity.keys(), total=len(kb_similarity)):
-
-                synonyms = []
-
-                if len(re.sub('[^A-Za-z0-9]', '', phrase)) > 2:
-                    phrase_id = kb_phrase_dict.get(phrase, None)
-
-                    if phrase_id is not None:
-
-                        nns = kb_similarity[phrase]
-
-                        num_nns = 0
-                        for nn, score in zip(nns[0], nns[1]):
-                            nn = processing_phrases(nn)
-                            if score < threshold or num_nns > 100:
-                                break
-
-                            if nn != phrase:
-
-                                phrase2_id = kb_phrase_dict.get(nn)
-
-                                if phrase2_id is not None:
-                                    phrase2 = nn
-
-                                    sim_edge = (phrase_id, phrase2_id)
-                                    synonyms.append((nn, score))
-
-                                    relations[(phrase, phrase2)] = 'equivalent'
-                                    graph_plus[sim_edge] = similarity_max * score
-
-                                    num_nns += 1
-
-                                    phrase_edges = graph_json.get(phrase, {})
-                                    edge = phrase_edges.get(phrase2, ('similarity', 0))
-                                    if edge[0] == 'similarity':
-                                        phrase_edges[phrase2] = ('similarity', edge[1] + score)
-                                        graph_json[phrase] = phrase_edges
-
-                synonym_candidates.append((phrase, synonyms))
-
-            pickle.dump(synonym_candidates, open(
-                'output/{}_similarity_edges_mean_{}_thresh_{}_{}_{}.{}.subset.p'.format(dataset, threshold, phrase_type, extraction_type, processed_retriever_name, version), 'wb'))
-        else:
-            graph_plus = graph
-
-        pickle.dump(relations,
-                    open('output/{}_{}_graph_relation_dict_{}_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, processed_retriever_name, version), 'wb'))
-
         print('Saving Graph')
-
-        synonymy_edges = set([edge for edge in relations.keys() if relations[edge] == 'equivalent'])
 
         stat_df = [('Total Phrases', len(phrases)),
                    ('Unique Phrases', len(unique_phrases)),
@@ -322,19 +250,9 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
                    ('Number of Entities', len(entities)),
                    ('Number of Relations', len(relations)),
                    ('Number of Unique Entities', len(np.unique(entities))),
-                   ('Number of Synonymy Edges', len(synonymy_edges)),
                    ('Number of Unique Relations', len(unique_relations))]
 
         print(pd.DataFrame(stat_df).set_index(0))
-
-        if similarity_max == 1.0:
-            pickle.dump(graph_plus, open(
-                'output/{}_{}_graph_mean_{}_thresh_{}_{}_{}.{}.subset.p'.format(dataset, graph_type, threshold, phrase_type,
-                                                                                extraction_type, processed_retriever_name, version), 'wb'))
-        else:
-            pickle.dump(graph_plus, open(
-                'output/{}_{}_graph_mean_{}_thresh_{}_{}_sim_max_{}_{}.{}.subset.p'.format(dataset, graph_type, threshold,
-                                                                                           phrase_type, extraction_type, similarity_max, processed_retriever_name, version), 'wb'))
 
         json.dump(graph_json, open('output/{}_{}_graph_chatgpt_openIE.{}_{}.{}.subset.json'.format(dataset, graph_type, phrase_type,
                                                                                                    extraction_type, version), 'w'))
@@ -346,19 +264,15 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str)
     parser.add_argument('--model_name', type=str)
     parser.add_argument('--extraction_model', type=str)
-    parser.add_argument('--threshold', type=float)
     parser.add_argument('--create_graph', action='store_true')
     parser.add_argument('--extraction_type', type=str)
-    parser.add_argument('--cosine_sim_edges', action='store_true')
 
     args = parser.parse_args()
     dataset = args.dataset
     retriever_name = args.model_name
     processed_retriever_name = retriever_name.replace('/', '_').replace('.', '')
     extraction_model = args.extraction_model.replace('/', '_')
-    threshold = args.threshold
     create_graph_flag = args.create_graph
     extraction_type = args.extraction_type
-    cosine_sim_edges = args.cosine_sim_edges
 
-    create_graph(dataset, extraction_type, extraction_model, retriever_name, processed_retriever_name, threshold, create_graph_flag, cosine_sim_edges)
+    create_graph(dataset, extraction_type, extraction_model, retriever_name, processed_retriever_name, create_graph_flag)
