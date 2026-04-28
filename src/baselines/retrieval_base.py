@@ -350,7 +350,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, choices=['hotpotqa', 'musique', '2wikimultihopqa', 'nq_rear', 'popqa', 'multihoprag', 'multihoprag_chunks'], required=True)
     parser.add_argument('--llm', type=str, default='openai', help="LLM, e.g., 'openai' or 'together'")
-    parser.add_argument('--llm_model', type=str, default='gpt-3.5-turbo-1106')
+    parser.add_argument('--llm_model', type=str, default='gpt-4o-mini')
     parser.add_argument('--retriever', type=str, default='facebook/contriever')
     parser.add_argument('--num_demo', type=int, default=1, help='the number of documents in the demonstration', required=True)
     parser.add_argument('--max_steps', type=int)
