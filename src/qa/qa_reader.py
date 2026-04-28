@@ -234,7 +234,7 @@ if __name__ == '__main__':
 
     assert data and len(data)
     demos = demos[:args.num_demo]
-    client = init_langchain_model(args.llm, args.llm_model)
+    client = init_langchain_model(args.llm, args.llm_model, role='rag')
     parallel_qa_read(data, demos, args, client, output_path, total_metrics, processed_id_set)
     with open(output_path, 'w') as f:
         json.dump(data, f)
