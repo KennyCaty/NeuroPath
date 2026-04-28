@@ -14,16 +14,16 @@ import argparse
 os.environ['TOKENIZERS_PARALLELISM'] = 'FALSE'
 
 
-def create_graph(dataset: str, extraction_type: str, extraction_model: str, retriever_name: str, processed_retriever_name: str,
+def create_graph(dataset: str, extraction_type: str, index_llm_model: str, retriever_name: str, processed_retriever_name: str,
                  create_graph_flag: bool = False):
     version = 'v3'
     inter_triple_weight = 1.0
-    possible_files = glob('output/openie_{}_results_{}_{}_*.json'.format(dataset, extraction_type, extraction_model))
-    max_samples = np.max([int(file.split('{}_'.format(extraction_model))[1].split('.json')[0]) for file in possible_files])
-    extracted_file = json.load(open('output/openie_{}_results_{}_{}_{}.json'.format(dataset, extraction_type, extraction_model, max_samples), 'r'))
+    possible_files = glob('output/openie_{}_results_{}_{}_*.json'.format(dataset, extraction_type, index_llm_model))
+    max_samples = np.max([int(file.split('{}_'.format(index_llm_model))[1].split('.json')[0]) for file in possible_files])
+    extracted_file = json.load(open('output/openie_{}_results_{}_{}_{}.json'.format(dataset, extraction_type, index_llm_model, max_samples), 'r'))
 
     extracted_triples = extracted_file['docs']
-    extraction_type = extraction_type + '_' + extraction_model
+    extraction_type = extraction_type + '_' + index_llm_model
     phrase_type = 'ents_only_lower_preprocess'
     graph_type = 'facts'
 
@@ -263,7 +263,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str)
     parser.add_argument('--model_name', type=str)
-    parser.add_argument('--extraction_model', type=str)
+    parser.add_argument('--index_llm_model', type=str)
     parser.add_argument('--create_graph', action='store_true')
     parser.add_argument('--extraction_type', type=str)
 
@@ -271,8 +271,8 @@ if __name__ == '__main__':
     dataset = args.dataset
     retriever_name = args.model_name
     processed_retriever_name = retriever_name.replace('/', '_').replace('.', '')
-    extraction_model = args.extraction_model.replace('/', '_')
+    index_llm_model = args.index_llm_model.replace('/', '_')
     create_graph_flag = args.create_graph
     extraction_type = args.extraction_type
 
-    create_graph(dataset, extraction_type, extraction_model, retriever_name, processed_retriever_name, create_graph_flag)
+    create_graph(dataset, extraction_type, index_llm_model, retriever_name, processed_retriever_name, create_graph_flag)
