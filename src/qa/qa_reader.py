@@ -73,7 +73,7 @@ def qa_read(query: str, passages: list, few_shot: list, client):
             user_prompt += f'{passage}\n\n'
         user_prompt += 'Question: ' + query + '\nThought: '
     except Exception as e:
-        print(e, "解析提示词错误")
+        print(e, "parse prompt error")
     # print(user_prompt)
     # assert False
     messages.append(HumanMessage(user_prompt))
@@ -86,7 +86,7 @@ def qa_read(query: str, passages: list, few_shot: list, client):
     try:
         chat_completion = client.invoke(messages.to_messages())
         response_content = chat_completion.content
-        total_tokens = chat_completion.response_metadata['token_usage']['total_tokens']  # 前提：openai格式的调用
+        total_tokens = chat_completion.response_metadata['token_usage']['total_tokens']  # assumes openai-compatible response format
     except Exception as e:
         print('QA read exception', e)
         return ''
@@ -146,12 +146,6 @@ def parallel_qa_read(data: list, demos: list, args, client, output_path: str, to
             return sample_idx, sample_id, retrieved, pred_ans, {'em': em, 'f1': f1, 'precision': precision, 'recall': recall}
             
         
-    # # 测试
-    # sample = data[0]
-    # sample_idx = 0
-    # result = process_sample((sample_idx, sample))
-    # assert False
-
     with ThreadPoolExecutor(max_workers=args.thread) as executor:
         futures = [executor.submit(process_sample, (sample_idx, sample)) for sample_idx, sample in enumerate(data)]
         for future in tqdm(as_completed(futures), total=len(futures), desc='QA read'):
@@ -239,9 +233,7 @@ if __name__ == '__main__':
         processed_id_set = {sample['id'] for sample in data if 'prediction' in sample}
 
     assert data and len(data)
-    demos = demos[:args.num_demo] # passage的few shot
-    # print(few_shot)
-    # assert False
+    demos = demos[:args.num_demo]
     client = init_langchain_model(args.llm, args.llm_model)
     parallel_qa_read(data, demos, args, client, output_path, total_metrics, processed_id_set)
     with open(output_path, 'w') as f:
