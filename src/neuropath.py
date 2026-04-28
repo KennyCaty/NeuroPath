@@ -46,9 +46,9 @@ class NeuroPath:
     def __init__(self, corpus_name='hotpotqa',
                  index_llm='openai', index_llm_model='gpt-4o-mini',
                  rag_llm='openai', rag_llm_model='gpt-4o-mini',
-                 graph_creating_retriever_name='facebook/contriever', extraction_type='ner', graph_type='facts', node_specificity=True,
-                 dpr_only=False, graph_alg='kg_path', corpus_path=None,
-                 linking_retriever_name=None, max_hop=2):
+                 graph_creating_retriever_name='facebook/contriever',
+                 extraction_type='ner', graph_type='facts',
+                 dpr_only=False, corpus_path=None, max_hop=2):
 
         self.max_hop = max_hop
         self.corpus_name = corpus_name
@@ -57,30 +57,26 @@ class NeuroPath:
         # rag_llm drives retrieval-time path tracking and query NER
         self.client = init_langchain_model(rag_llm, rag_llm_model, role='rag')
         assert graph_creating_retriever_name
-        if linking_retriever_name is None:
-            linking_retriever_name = graph_creating_retriever_name
         self.graph_creating_retriever_name = graph_creating_retriever_name
         self.graph_creating_retriever_name_processed = graph_creating_retriever_name.replace('/', '_').replace('.', '')
-        self.linking_retriever_name = linking_retriever_name
-        self.linking_retriever_name_processed = linking_retriever_name.replace('/', '_').replace('.', '')
 
         # extraction_type encodes phrase-extraction scheme + indexing LLM, so that
         # graph artifacts are uniquely keyed on (extraction scheme, index_llm_model).
         self.extraction_type = f'{extraction_type}_{self.index_llm_model_processed}'
         self.graph_type = graph_type
         self.phrase_type = 'ents_only_lower_preprocess'
-        self.node_specificity = node_specificity
-
-        self.graph_alg = graph_alg
 
         self.version = 'v3'
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         self.logger = logging.getLogger(__name__)
 
+        # NER cache is keyed on the indexing LLM so switching rag_llm won't invalidate it.
+        ner_cache_path = 'output/{}_{}_queries.named_entity_output.tsv'.format(
+            self.corpus_name, self.index_llm_model_processed)
         try:
-            self.named_entity_cache = pd.read_csv('output/{}_queries.named_entity_output.tsv'.format(self.corpus_name), sep='\t')
+            self.named_entity_cache = pd.read_csv(ner_cache_path, sep='\t')
         except Exception as e:
-            print("named_entity read error, ",e)
+            print("named_entity read error, ", e)
             self.named_entity_cache = pd.DataFrame([], columns=['query', 'triples'])
 
         if 'query' in self.named_entity_cache:
@@ -90,7 +86,7 @@ class NeuroPath:
             self.named_entity_cache = {row['question']: eval(row['triples']) for i, row in self.named_entity_cache.iterrows()}
 
 
-        self.embed_model = init_embedding_model(self.linking_retriever_name)
+        self.embed_model = init_embedding_model(self.graph_creating_retriever_name)
         self.dpr_only = dpr_only
         self.corpus_path = corpus_path
         self.fact_json = json.load(open(
@@ -100,15 +96,12 @@ class NeuroPath:
         # Loading Important Corpus Files
         if not self.dpr_only:
             self.load_index_files()
-
-            # Loading Node Embeddings
             self.load_node_vectors()
         else:
             self.load_corpus()
 
-        if dpr_only or graph_alg == 'kg_path':
-            # Loading Doc Embeddings
-            self.get_dpr_doc_embedding()
+        # Doc embeddings are always needed (kg_path + fallback pure-similarity retrieval).
+        self.get_dpr_doc_embedding()
 
         self.statistics = {}
         self.ensembling_debug = []
@@ -492,66 +485,45 @@ Paths:\n"""
         """
 
         assert isinstance(query, str), 'Query must be a string'
-        # query_ner_list, virtual_target_path = self.query_ner(query)
         query_ner_list = self.query_ner(query)
 
+        if len(query_ner_list) > 0:  # path-guided retrieval
+            query_ner_embeddings = self.embed_model.encode(query_ner_list, normalize_embeddings=True, device='cuda', show_progress_bar=False)
+            # Get closest entity nodes
+            prob_vectors = np.dot(query_ner_embeddings, self.kb_node_phrase_embeddings.T)
+            linked_phrase_ids = []  # seed phrases
+            for prob_vector in prob_vectors:
+                phrase_id = np.argmax(prob_vector)
+                linked_phrase_ids.append(phrase_id)
 
-        if self.graph_alg=='kg_path':
+            candidate_doc_ids, candidate_paths, total_tokens, all_thought, llm_time_for_one_q = self.get_path_filtered_docs(None, linked_phrase_ids, query, one_shot)
 
-            if len(query_ner_list) > 0:  # use Path
-                query_ner_embeddings = self.embed_model.encode(query_ner_list, normalize_embeddings=True, device='cuda', show_progress_bar=False)
-                # Get Closest Entity Nodes
-                prob_vectors = np.dot(query_ner_embeddings, self.kb_node_phrase_embeddings.T)  # (num_ner, dim) x (num_phrases, dim).T -> (num_ner, num_phrases)
-                linked_phrase_ids = []  # Seed Phrases
+            query_embedding = self.embed_model.encode([query + all_thought], normalize_embeddings=True, device='cuda', show_progress_bar=False)
+            query_doc_scores = np.dot(self.doc_embedding_mat, query_embedding.T).T[0]
+            sorted_doc_ids = np.argsort(query_doc_scores)[::-1]
+            sorted_scores = query_doc_scores[sorted_doc_ids]
 
-                for prob_vector in prob_vectors:
-                    phrase_id = np.argmax(prob_vector)  # the phrase with the highest similarity
-                    linked_phrase_ids.append(phrase_id)
-                
-                
-                # get re-ranked doc ids
-                candidate_doc_ids, candidate_paths, total_tokens, all_thought, llm_time_for_one_q = self.get_path_filtered_docs(None, linked_phrase_ids, query, one_shot)
-                
-                query_embedding = self.embed_model.encode([query+all_thought], normalize_embeddings=True, device='cuda', show_progress_bar=False)
-                
-                query_doc_scores = np.dot(self.doc_embedding_mat, query_embedding.T)
-                query_doc_scores = query_doc_scores.T[0]
+            doc_ids = []
+            doc_scores = []
+            for t in candidate_doc_ids:
+                doc_ids.append(t)
+                doc_scores.append(1)  # placeholder score
+            # Pad with remaining top docs to keep top-k recall meaningful
+            for idx in range(100):
+                if sorted_doc_ids[idx] not in doc_ids:
+                    doc_ids.append(sorted_doc_ids[idx])
+                    doc_scores.append(sorted_scores[idx])
+        else:  # fallback to pure similarity retrieval
+            query_embedding = self.embed_model.encode([query], normalize_embeddings=True, device='cuda', show_progress_bar=False)
+            query_doc_scores = np.dot(self.doc_embedding_mat, query_embedding.T).T[0]
+            sorted_doc_ids = np.argsort(query_doc_scores)[::-1]
+            doc_ids = sorted_doc_ids
+            doc_scores = query_doc_scores[sorted_doc_ids]
 
-                doc_ids = []
-                doc_scores = []
-                # all-doc similarity scores
-                doc_prob = query_doc_scores
-                # sorted ids and scores
-                sorted_doc_ids = np.argsort(doc_prob)[::-1]
-                sorted_scores = doc_prob[sorted_doc_ids]
-                
-                for t in candidate_doc_ids:
-                    doc_ids.append(t)
-                    doc_scores.append(1)  # placeholder score
-                # pad with the remaining top docs to keep top-k recall meaningful
-                for idx in range(100):
-                    if sorted_doc_ids[idx] not in doc_ids:
-                        doc_ids.append(sorted_doc_ids[idx])
-                        doc_scores.append(sorted_scores[idx])
-            else:  # fallback to pure similarity retrieval
-                query_embedding = self.embed_model.encode([query], normalize_embeddings=True, device='cuda', show_progress_bar=False)
-                query_doc_scores = np.dot(self.doc_embedding_mat, query_embedding.T)
-                query_doc_scores = query_doc_scores.T[0]
-
-
-                doc_ids = []
-                doc_scores = []
-                doc_prob = query_doc_scores
-                sorted_doc_ids = np.argsort(doc_prob)[::-1]
-                sorted_scores = doc_prob[sorted_doc_ids]
-                
-                doc_ids = sorted_doc_ids
-                doc_scores = sorted_scores
-                
-                candidate_doc_ids = []
-                candidate_paths = []
-                total_tokens = 0
-                llm_time_for_one_q = 0
+            candidate_doc_ids = []
+            candidate_paths = []
+            total_tokens = 0
+            llm_time_for_one_q = 0
         return doc_ids[:top_k], doc_scores[:top_k], candidate_doc_ids, candidate_paths, total_tokens, llm_time_for_one_q
     
     
@@ -665,11 +637,11 @@ Paths:\n"""
             return []
 
     def load_node_vectors(self):
-        encoded_string_path = 'data/lm_vectors/{}_mean/encoded_strings.txt'.format(self.linking_retriever_name_processed)
+        encoded_string_path = 'data/lm_vectors/{}_mean/encoded_strings.txt'.format(self.graph_creating_retriever_name_processed)
         if os.path.isfile(encoded_string_path):
             self.load_node_vectors_from_string_encoding_cache(encoded_string_path)   # loads all KB node embeddings into self.kb_node_phrase_embeddings
         else:  # use another way to load node vectors
-            kb_node_phrase_embeddings_path = 'data/lm_vectors/{}_mean/{}_kb_node_phrase_embeddings.p'.format(self.linking_retriever_name_processed, self.corpus_name)
+            kb_node_phrase_embeddings_path = 'data/lm_vectors/{}_mean/{}_kb_node_phrase_embeddings.p'.format(self.graph_creating_retriever_name_processed, self.corpus_name)
             if os.path.isfile(kb_node_phrase_embeddings_path):
                 self.kb_node_phrase_embeddings = pickle.load(open(kb_node_phrase_embeddings_path, 'rb'))
                 if len(self.kb_node_phrase_embeddings.shape) == 3:
@@ -684,10 +656,10 @@ Paths:\n"""
         self.logger.info('Loading node vectors from: ' + string_file_path)
         kb_vectors = []
         self.strings = open(string_file_path, 'r').readlines()
-        for i in range(len(glob('data/lm_vectors/{}_mean/vecs_*'.format(self.linking_retriever_name_processed)))):
+        for i in range(len(glob('data/lm_vectors/{}_mean/vecs_*'.format(self.graph_creating_retriever_name_processed)))):
             kb_vectors.append(
                 torch.Tensor(pickle.load(
-                    open('data/lm_vectors/{}_mean/vecs_{}.p'.format(self.linking_retriever_name_processed, i), 'rb'))))   # vec_nums * emb_dim
+                    open('data/lm_vectors/{}_mean/vecs_{}.p'.format(self.graph_creating_retriever_name_processed, i), 'rb'))))   # vec_nums * emb_dim
         kb_mat = torch.cat(kb_vectors)  # matrix of phrase vectors
         self.strings = [s.strip() for s in self.strings]
         self.string_to_id = {string: i for i, string in enumerate(self.strings)}
@@ -707,7 +679,7 @@ Paths:\n"""
         self.logger.info('{} phrases did not have vectors.'.format(num_non_vector_phrases))
 
     def get_dpr_doc_embedding(self):
-        cache_filename = 'data/lm_vectors/{}_mean/{}_doc_embeddings.p'.format(self.linking_retriever_name_processed, self.corpus_name)
+        cache_filename = 'data/lm_vectors/{}_mean/{}_doc_embeddings.p'.format(self.graph_creating_retriever_name_processed, self.corpus_name)
         if os.path.exists(cache_filename):
             self.doc_embedding_mat = pickle.load(open(cache_filename, 'rb'))
             self.logger.info(f'Loaded doc embeddings from {cache_filename}, shape: {self.doc_embedding_mat.shape}')
