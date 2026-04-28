@@ -119,39 +119,28 @@ if __name__ == '__main__':
     parser.add_argument('--llm', type=str, default='openai', help="LLM, e.g., 'openai' or 'together'")
     parser.add_argument('--llm_model', type=str, default='gpt-4o-mini', help='Specific model name')
     parser.add_argument('--retriever', type=str, default='facebook/contriever')
-    parser.add_argument('--prompt', type=str)
     parser.add_argument('--max_hop', type=int, default=2)
     parser.add_argument('--top_k', type=int, default=10, help='retrieving k documents at each step')
-    # parser.add_argument('--doc_ensemble', type=str, default='f')
     parser.add_argument('--dpr_only', type=str, default='f')
     parser.add_argument('--graph_alg', type=str, default='kg_path')
     parser.add_argument('--wo_node_spec', action='store_true')
-    parser.add_argument('--sim_threshold', type=float, default=0.8)
-    # parser.add_argument('--damping', type=float, default=0.1)
     parser.add_argument('--force_retry', action='store_true')
-    parser.add_argument('--track_alg', type=str, default='single_step')
     parser.add_argument('--one_shot', type=str, default='f')
     args = parser.parse_args()
 
-    # doc_ensemble = string_to_bool(args.doc_ensemble)
     dpr_only = string_to_bool(args.dpr_only)
     one_shot = string_to_bool(args.one_shot)
 
     client = init_langchain_model(args.llm, args.llm_model)
     llm_model_name_processed = args.llm_model.replace('/', '_').replace('.', '_')
-    # if args.llm_model == 'gpt-3.5-turbo-1106':  # Default OpenIE system
-    #     colbert_configs = {'root': f'data/lm_vectors/colbert/{args.dataset}', 'doc_index_name': 'nbits_2', 'phrase_index_name': 'nbits_2'}
-    # else:
-    #     colbert_configs = {'root': f'data/lm_vectors/colbert/{args.dataset}_{llm_model_name_processed}', 'doc_index_name': 'nbits_2', 'phrase_index_name': 'nbits_2'}
     colbert_configs = {'root': f'data/lm_vectors/colbert/{args.dataset}', 'doc_index_name': 'nbits_2', 'phrase_index_name': 'nbits_2'}
 
-    # graph_type='facts' 
+    # graph_type='facts'
     rag = NeuroPath(args.dataset, args.llm, args.llm_model, args.retriever, node_specificity=not (args.wo_node_spec), graph_type='facts',
                    colbert_config=colbert_configs, dpr_only=dpr_only, graph_alg=args.graph_alg, max_hop=args.max_hop)
 
     data = json.load(open(f'data/{args.dataset}.json', 'r'))
     corpus = json.load(open(f'data/{args.dataset}_corpus.json', 'r'))
-    # max_steps = args.max_steps
 
 
     if dpr_only:
@@ -201,67 +190,38 @@ if __name__ == '__main__':
             print(f'R@{k}: {total_recall[k] / len(results):.4f} ', end='')
         print()
         
-    # 新增
-    # 自定义序列化函数 防止int64 和 float32不能被json序列化
-    # def default_serializer(obj):
-    #     if isinstance(obj, np.int64):
-    #         return int(obj)  # 转换为 Python 原生 int 类型
-    #     elif isinstance(obj, (np.float32, np.float64)):
-    #         return float(obj)  # 将 numpy.float32 和 numpy.float64 转换为 Python float 类型
-    #     raise TypeError(f"Type {type(obj)} not serializable")
+    # JSON serializer that handles numpy types
     def default_serializer(obj):
-        # 处理 NumPy 整数类型
         if isinstance(obj, (np.int_, np.int8, np.int16, np.int32, np.int64)):
-            return int(obj)  # 转换为 Python 原生 int 类型
-
-        # 处理 NumPy 浮点类型
+            return int(obj)
         elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
-            return float(obj)  # 转换为 Python 原生 float 类型
-
-        # 处理 NumPy 布尔类型
+            return float(obj)
         elif isinstance(obj, (np.bool_)):
-            return bool(obj)  # 转换为 Python 原生 bool 类型
-
-        # 处理 NumPy 数组
+            return bool(obj)
         elif isinstance(obj, np.ndarray):
-            return obj.tolist()  # 将数组转换为列表
-
-        # 如果是其他类型，抛出异常
+            return obj.tolist()
         raise TypeError(f"Type {type(obj)} not serializable")
 
     
 
-    # ========= 多线程 ==========
-    # data = data[:10]
+    # ========= multi-thread retrieval ==========
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    # 读入之前提取KG信息的文件
+    # load previously extracted KG info
     with open(glob(f"output/openie_{args.dataset}_results_ner_{args.llm_model}_*.json")[0], 'r') as f:
         openie = json.load(f)['docs']
     
     def process_sample(sample, processed_ids, args, corpus, rag, k_list):
-        """单个样本的处理逻辑"""
+        """Per-sample processing logic"""
         
         try:
-            start_time = time.time()  # 记录开始时间
-                
-            # if args.dataset in ['hotpotqa', '2wikimultihopqa', 'hotpotqa_train']:
-            #     sample_id = sample['_id']
-            # else:
-            #     sample_id = sample['id']
-            
-            # if sample_id in processed_ids:
-            #     return None  # 跳过已处理的样本
+            start_time = time.time()
             
             query = sample['question']
-            # all_logs = {}
             retrieved_passages, scores, candidate_doc_ids, candidate_paths, total_tokens, llm_time_for_one_q = retrieve_step(query, corpus, args.top_k, rag, args.dataset, one_shot)
-            # it = 1
-            # all_logs[it] = logs
-            # thoughts = []
             retrieved_passages_dict = {passage: score for passage, score in zip(retrieved_passages, scores)}
-            elapsed_time = time.time() - start_time  # 记录结束时间并计算耗时
-            sample['processing_time'] = elapsed_time  # 将处理时间添加到样本中
-            # 计算 Recall
+            elapsed_time = time.time() - start_time
+            sample['processing_time'] = elapsed_time
+            # compute Recall
             if args.dataset in ['hotpotqa', 'hotpotqa_train']:
                 gold_passages = [item for item in sample['supporting_facts']]
                 gold_items = set([item[0] for item in gold_passages])
@@ -292,7 +252,7 @@ if __name__ == '__main__':
             for k in k_list:
                 recall[k] = round(sum(1 for t in gold_items if t in retrieved_items[:k]) / len(gold_items), 4)
             
-            # 构造结果
+            # assemble result
             phrases_in_gold_docs = []
             for gold_item in gold_items:
                 phrases_in_gold_docs.append(rag.get_phrases_in_doc_str(gold_item))
@@ -319,33 +279,18 @@ if __name__ == '__main__':
             sample['candidate_doc_ids'] = candidate_doc_ids
             sample['candidate_paths'] = candidate_paths      
             
-            # ner_descriptions = []
-            # for doc_id in candidate_doc_ids:
-            #     doc = openie[doc_id]
-            #     ner_description = doc['ner_description']
-            #     ner_descriptions.append(ner_description)
-            # sample['ner_descriptions'] = ner_descriptions  
-            
-
-            
             return sample, total_tokens, llm_time_for_one_q
         
         except Exception as e:
-            # 捕获异常并记录日志
             print(f"Error processing sample {sample.get('_id', sample.get('id'))}: {e}")
             return None
 
-    lock = Lock() # 保证修改变量的操作是原子的
-    total_processing_time = 0  # 总处理时间
-    valid_sample_count = 0     # 有效样本数量
-    total_tokens = 0           # 总消耗tokens
+    lock = Lock()  # ensure atomic state updates across threads
+    total_processing_time = 0
+    valid_sample_count = 0
+    total_tokens = 0
     all_llm_time = 0
     
-    # 如果 output_path 存在 直接计算指标
-    # if os.path.exists(output_path):
-        
-    
-    # 主函数
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = []
         for sample_idx, sample in enumerate(data):
@@ -361,39 +306,33 @@ if __name__ == '__main__':
                     results.append(result)
                     with lock:
                         total_tokens += tokens 
-                        # 更新总处理时间和有效样本数量
                         total_processing_time += result['processing_time']
                         valid_sample_count += 1
                         all_llm_time += llm_time_for_one_q
                         
-                    # 更新 Recall 指标
                     for k in k_list:
                         total_recall[k] += result['recall'][k]
                     
-                    # 打印实时 Recall
                     print(f"Processed {len(results)} samples: ", end='')
                     for k in k_list:
                         avg_recall = total_recall[k] / len(results)
                         print(f"R@{k}: {avg_recall:.4f} ", end='')
                     print()
                 
-                # 每 10 个样本保存一次结果
+                # save every 10 samples
                 if len(results) % 10 == 0:
                     with open(output_path, 'w') as f:
                         json.dump(results, f, default=default_serializer)
             
             except Exception as e:
-                # 捕获 Future 中的异常
                 print(f"Error in a thread: {e}")
-        # 计算平均处理时间
         average_processing_time = total_processing_time / valid_sample_count if valid_sample_count > 0 else 0
         
-        # 打印总时间和平均时间
         print(f"Total processing time: {total_processing_time:.4f} seconds")
         print(f"Average processing time per sample: {average_processing_time:.4f} seconds")
         print(f"LLM processing time: {all_llm_time:.4f} seconds")
         print(f"Total tokens: {total_tokens} tokens")
-    # ======= 多线程 END ============
+    # ======= multi-thread END ============
   
     # save results
     with open(output_path, 'w') as f:
