@@ -64,7 +64,9 @@ class NeuroPath:
         self.linking_retriever_name = linking_retriever_name
         self.linking_retriever_name_processed = linking_retriever_name.replace('/', '_').replace('.', '')
 
-        self.extraction_type = extraction_type
+        # extraction_type encodes phrase-extraction scheme + indexing LLM, so that
+        # graph artifacts are uniquely keyed on (extraction scheme, index_llm_model).
+        self.extraction_type = f'{extraction_type}_{self.index_llm_model_processed}'
         self.graph_type = graph_type
         self.phrase_type = 'ents_only_lower_preprocess'
         self.node_specificity = node_specificity
@@ -91,7 +93,9 @@ class NeuroPath:
         self.embed_model = init_embedding_model(self.linking_retriever_name)
         self.dpr_only = dpr_only
         self.corpus_path = corpus_path
-        self.fact_json = json.load(open('output/{}_{}_graph_clean_facts_chatgpt_openIE.{}_{}_gpt-4o-mini.{}.subset.json'.format(corpus_name, graph_type, self.phrase_type, extraction_type, self.version), 'r'))
+        self.fact_json = json.load(open(
+            'output/{}_{}_graph_clean_facts_chatgpt_openIE.{}_{}.{}.subset.json'.format(
+                corpus_name, graph_type, self.phrase_type, self.extraction_type, self.version), 'r'))
 
         # Loading Important Corpus Files
         if not self.dpr_only:
@@ -614,8 +618,6 @@ Paths:\n"""
             self.dataset_df = pd.DataFrame([p['passage'] for p in self.extracted_triples])
             self.dataset_df['paragraph'] = [s['passage'] for s in self.extracted_triples]
 
-        if self.index_llm_model != 'gpt-3.5-turbo-1106':
-            self.extraction_type = self.extraction_type + '_' + self.index_llm_model_processed
         self.kb_node_phrase_to_id = pickle.load(open(
             'output/{}_{}_graph_phrase_dict_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type,
                                                                       self.extraction_type, self.version), 'rb'))
