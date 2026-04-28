@@ -1,21 +1,18 @@
 import sys
 
 sys.path.append('.')
-from langchain_community.chat_models import ChatOllama, ChatLlamaCpp
 
 import argparse
 import json
 from glob import glob
 
 import numpy as np
-from langchain_openai import ChatOpenAI
 
 from multiprocessing import Pool
 from tqdm import tqdm
 
 from src.langchain_util import init_langchain_model
 from src.openie_extraction_instructions import openie_prompt
-from src.processing import extract_json_dict
 
 
 def print_messages(messages):
@@ -32,20 +29,10 @@ def openie(passage: str):
     openie_dict = {}
     while not_done:
         try:
-            if isinstance(client, ChatOpenAI):  # JSON mode
-                chat_completion = client.invoke(messages.to_messages(), temperature=0, response_format={"type": "json_object"})
-                response_content = chat_completion.content
-                response_content = eval(response_content)
-                total_tokens += chat_completion.response_metadata['token_usage']['total_tokens']
-            elif isinstance(client, ChatOllama) or isinstance(client, ChatLlamaCpp):
-                response_content = client.invoke(messages.to_messages())
-                response_content = extract_json_dict(response_content)
-                total_tokens += len(response_content.split())
-            else:  # no JSON mode
-                chat_completion = client.invoke(messages.to_messages(), temperature=0)
-                response_content = chat_completion.content
-                response_content = extract_json_dict(response_content)
-                total_tokens += chat_completion.response_metadata['token_usage']['total_tokens']
+            chat_completion = client.invoke(messages.to_messages(), temperature=0, response_format={"type": "json_object"})
+            response_content = chat_completion.content
+            response_content = eval(response_content)
+            total_tokens += chat_completion.response_metadata['token_usage']['total_tokens']
 
             if 'named_entities' not in response_content:
                 named_entities = []
@@ -89,7 +76,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str)
     parser.add_argument('--run_ner', action='store_true')
     parser.add_argument('--num_passages', type=str, default='10')
-    parser.add_argument('--llm', type=str, default='openai', help="LLM, e.g., 'openai' or 'together'")
+    parser.add_argument('--llm', type=str, default='openai', help="LLM provider (only 'openai' is supported; use an OpenAI-compatible base_url for vLLM/Ollama).")
     parser.add_argument('--model_name', type=str, default='gpt-4o-mini', help='Specific model name')
     parser.add_argument('--num_processes', type=int, default=10)
 
