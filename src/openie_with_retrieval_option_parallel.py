@@ -1,7 +1,6 @@
 import sys
 
 sys.path.append('.')
-from concurrent.futures import ThreadPoolExecutor
 from langchain_community.chat_models import ChatOllama, ChatLlamaCpp
 
 import argparse
@@ -11,7 +10,6 @@ from glob import glob
 import numpy as np
 from langchain_openai import ChatOpenAI
 
-import ipdb
 from multiprocessing import Pool
 from tqdm import tqdm
 
@@ -84,72 +82,6 @@ def openie(passage: str):
                 not_done = False
 
     return openie_dict, total_tokens
-
-
-def named_entity_recognition(passage: str):
-    ner_messages = ner_prompts.format_prompt(user_input=passage)
-
-    not_done = True
-
-    total_tokens = 0
-    response_content = '{}'
-
-    while not_done:
-        try:
-            if isinstance(client, ChatOpenAI):  # JSON mode
-                chat_completion = client.invoke(ner_messages.to_messages(), temperature=0, response_format={"type": "json_object"})
-                response_content = chat_completion.content
-                response_content = eval(response_content)
-                total_tokens += chat_completion.response_metadata['token_usage']['total_tokens']
-            elif isinstance(client, ChatOllama) or isinstance(client, ChatLlamaCpp):
-                response_content = client.invoke(ner_messages.to_messages())
-                response_content = extract_json_dict(response_content)
-                total_tokens += len(response_content.split())
-            else:  # no JSON mode
-                chat_completion = client.invoke(ner_messages.to_messages(), temperature=0)
-                response_content = chat_completion.content
-                response_content = extract_json_dict(response_content)
-                total_tokens += chat_completion.response_metadata['token_usage']['total_tokens']
-
-            if 'named_entities' not in response_content:
-                response_content = []
-            else:
-                response_content = response_content['named_entities']
-
-            not_done = False
-        except Exception as e:
-            print('Passage NER exception')
-            print(e)
-
-    return response_content, total_tokens
-
-
-def openie_post_ner_extract(passage: str, entities: list, model: str):
-    named_entity_json = {"named_entities": entities}
-    openie_messages = openie_post_ner_prompts.format_prompt(passage=passage, named_entity_json=json.dumps(named_entity_json))
-
-    try:
-        if isinstance(client, ChatOpenAI):  # JSON mode
-            chat_completion = client.invoke(openie_messages.to_messages(), temperature=0, max_tokens=4096, response_format={"type": "json_object"})
-            response_content = chat_completion.content
-            total_tokens = chat_completion.response_metadata['token_usage']['total_tokens']
-        elif isinstance(client, ChatOllama) or isinstance(client, ChatLlamaCpp):
-            response_content = client.invoke(openie_messages.to_messages())
-            response_content = extract_json_dict(response_content)
-            response_content = str(response_content)
-            total_tokens = len(response_content.split())
-        else:  # no JSON mode
-            chat_completion = client.invoke(openie_messages.to_messages(), temperature=0, max_tokens=4096)
-            response_content = chat_completion.content
-            response_content = extract_json_dict(response_content)
-            response_content = str(response_content)
-            total_tokens = chat_completion.response_metadata['token_usage']['total_tokens']
-
-    except Exception as e:
-        print('OpenIE exception', e)
-        return '', 0
-
-    return response_content, total_tokens
 
 
 if __name__ == '__main__':
