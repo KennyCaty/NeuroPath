@@ -197,7 +197,7 @@ if __name__ == '__main__':
 
     print(arg_str)
 
-    client = init_langchain_model(args.llm, model_name)  # LangChain model
+    client = init_langchain_model(args.llm, model_name, role='index')  # LangChain model
     already_done = False
 
     try:
