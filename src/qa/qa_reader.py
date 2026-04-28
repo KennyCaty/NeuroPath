@@ -179,7 +179,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, help='retrieval results or QA reading results', choices=['hotpotqa', 'musique', '2wikimultihopqa'], required=True)
     parser.add_argument('--data', type=str, help='retrieval results or QA reading results')
     parser.add_argument('--retriever', type=str, help='retriever name to distinguish different experiments')
-    parser.add_argument('--llm', type=str, default='openai', help="LLM, e.g., 'openai' or 'together'")
+    parser.add_argument('--llm', type=str, default='openai', help="LLM provider (only 'openai' is supported; use an OpenAI-compatible base_url for vLLM/Ollama).")
     parser.add_argument('--llm_model', type=str, default='gpt-4o-mini', help='Specific model name')
     parser.add_argument('--num_demo', type=int, default=1, help='the number of few-shot examples')
     parser.add_argument('--num_doc', type=int, default=5, help='the number of in-context documents')
