@@ -7,13 +7,12 @@ from src.processing import extract_json_dict
 from langchain_community.chat_models import ChatLlamaCpp
 from langchain_ollama import ChatOllama
 
-sys.path.append('.')
 import argparse
 from multiprocessing import Pool
 
 import numpy as np
 import pandas as pd
-from langchain_core.messages import SystemMessage, AIMessage, HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
@@ -82,8 +81,8 @@ def ner_vtp_extraction(client, text: str):
     return response_content, total_tokens
 
 
-def run_ner_vtp_on_texts(texts):
-    client = init_langchain_model('openai', "gpt-4o-mini", role='index')  # LangChain model
+def run_ner_vtp_on_texts(texts, llm='openai', model_name='gpt-4o-mini'):
+    client = init_langchain_model(llm, model_name, role='index')
     outputs = []
     total_cost = 0
 
@@ -96,10 +95,9 @@ def run_ner_vtp_on_texts(texts):
 
 
 if __name__ == '__main__':
-    # Get the first argument
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str)
-    parser.add_argument('--llm', type=str, default='openai', help="LLM, e.g., 'openai' or 'together'")
+    parser.add_argument('--llm', type=str, default='openai', help="LLM provider, e.g., 'openai' or 'together'")
     parser.add_argument('--model_name', type=str, default='gpt-4o-mini', help='Specific model name')
     parser.add_argument('--num_processes', type=int, default=8, help='Number of processes')
 
@@ -107,10 +105,9 @@ if __name__ == '__main__':
 
     dataset = args.dataset
     model_name = args.model_name
+    model_name_processed = model_name.replace('/', '_')
 
-    output_file = 'output/{}_queries.named_entity_output.tsv'.format(dataset)
-
-    client = init_langchain_model(args.llm, model_name, role='index')  # LangChain model
+    output_file = 'output/{}_{}_queries.named_entity_output.tsv'.format(dataset, model_name_processed)
 
     try:
         queries_df = pd.read_json(f'data/{dataset}.json')
@@ -135,33 +132,32 @@ if __name__ == '__main__':
 
             splits = np.array_split(range(len(queries)), num_processes)
 
-            args = []
+            split_args = []
 
             for split in splits:
-                args.append([queries[i] for i in split])
+                split_args.append([queries[i] for i in split])
 
+            partial_func = partial(run_ner_vtp_on_texts, llm=args.llm, model_name=model_name)
             if num_processes == 1:
-                outputs = [run_ner_vtp_on_texts(args[0])]
+                outputs = [partial_func(split_args[0])]
             else:
-                partial_func = partial(run_ner_vtp_on_texts)
                 with Pool(processes=num_processes) as pool:
-                    outputs = pool.map(partial_func, args)
+                    outputs = pool.map(partial_func, split_args)
 
             chatgpt_total_tokens = 0
 
             query_triples = []
-            
+
             for output in outputs:
                 query_triples.extend(output[0])
                 chatgpt_total_tokens += output[1]
 
             print("Tokens: ", chatgpt_total_tokens)
-            current_cost = 0.002 * chatgpt_total_tokens / 1000
 
             queries_df['triples'] = query_triples
             queries_df.to_csv(output_file, sep='\t')
-            print('Passage NER saved to', output_file)
+            print('Query NER saved to', output_file)
         else:
-            print('Passage NER already saved to', output_file)
+            print('Query NER already saved to', output_file)
     except Exception as e:
         print('No queries will be processed for later retrieval.', e)
