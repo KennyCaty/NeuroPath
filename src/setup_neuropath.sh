@@ -1,7 +1,7 @@
 data=$1  # e.g., 'sample'
 retriever_name=$2  # e.g., 'facebook/contriever'
 index_llm_model=$3 # e.g., 'gpt-4o-mini' (OpenAI)
-llm_api=$4 # e.g., 'openai', 'together'
+llm_api=$4 # e.g., 'openai' (also used for OpenAI-compatible endpoints like vLLM/Ollama)
 extraction_type=ner
 
 # Running Open Information Extraction
