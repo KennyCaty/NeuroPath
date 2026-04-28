@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from scipy.sparse import csr_array
 from processing import *
 from glob import glob
@@ -15,7 +16,6 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'FALSE'
 def create_graph(dataset: str, extraction_type: str, index_llm_model: str, retriever_name: str, processed_retriever_name: str,
                  create_graph_flag: bool = False):
     version = 'v3'
-    inter_triple_weight = 1.0
     possible_files = glob('output/openie_{}_results_{}_{}_*.json'.format(dataset, extraction_type, index_llm_model))
     max_samples = np.max([int(file.split('{}_'.format(index_llm_model))[1].split('.json')[0]) for file in possible_files])
     extracted_file = json.load(open('output/openie_{}_results_{}_{}_{}.json'.format(dataset, extraction_type, index_llm_model, max_samples), 'r'))
@@ -25,7 +25,6 @@ def create_graph(dataset: str, extraction_type: str, index_llm_model: str, retri
     phrase_type = 'ents_only_lower_preprocess'
     graph_type = 'facts'
 
-    passage_json = []
     phrases = []
     entities = []
     relations = {}
@@ -36,29 +35,18 @@ def create_graph(dataset: str, extraction_type: str, index_llm_model: str, retri
     correct_wiki_format = 0
 
     for i, row in tqdm(enumerate(extracted_triples), total=len(extracted_triples)):
-        document = row['passage']
-        raw_ner_entities = row['extracted_entities']
         ner_entities = [processing_phrases(p) for p in row['extracted_entities']]
 
         triples = row['extracted_triples']
 
-        doc_json = row
-
         clean_triples = []
-        unclean_triples = []
-        doc_entities = set()
 
-        # Populate Triples from OpenIE
         for triple in triples:
-
             triple = [str(s) for s in triple]
 
             if len(triple) > 1:
                 if len(triple) != 3:
-                    clean_triple = [processing_phrases(p) for p in triple]
-
                     incorrectly_formatted_triples.append(triple)
-                    unclean_triples.append(triple)
                 else:
                     clean_triple = [processing_phrases(p) for p in triple]
 
@@ -86,14 +74,8 @@ def create_graph(dataset: str, extraction_type: str, index_llm_model: str, retri
 
                     for triple_entity in [clean_triple[0], clean_triple[2]]:
                         entities.append(triple_entity)
-                        doc_entities.add(triple_entity)
 
-        doc_json['entities'] = list(set(doc_entities))
-        doc_json['clean_triples'] = clean_triples
-        doc_json['noisy_triples'] = unclean_triples
         triple_tuples.append(clean_triples)
-
-        passage_json.append(doc_json)
 
     print('Correct Wiki Format: {} out of {}'.format(correct_wiki_format, len(extracted_triples)))
 
@@ -102,94 +84,45 @@ def create_graph(dataset: str, extraction_type: str, index_llm_model: str, retri
 
     if create_graph_flag:
         print('Creating Graph')
-        node_json = [{'idx': i, 'name': p} for i, p in enumerate(unique_phrases)]
-        kb_phrase_df = pd.DataFrame(unique_phrases)
         kb_phrase_dict = {p: i for i, p in enumerate(unique_phrases)}
 
         lose_facts = []
-
         for triples in triple_tuples:
             lose_facts.extend([tuple(t) for t in triples])
 
         lose_fact_dict = {f: i for i, f in enumerate(lose_facts)}
         fact_json = [{'idx': i, 'head': t[0], 'relation': t[1], 'tail': t[2]} for i, t in enumerate(lose_facts)]
 
-        json.dump(passage_json, open('output/{}_{}_graph_passage_chatgpt_openIE.{}_{}.{}.subset.json'.format(dataset, graph_type, phrase_type, extraction_type, version), 'w'))
-        json.dump(node_json, open('output/{}_{}_graph_nodes_chatgpt_openIE.{}_{}.{}.subset.json'.format(dataset, graph_type, phrase_type, extraction_type, version), 'w'))
         json.dump(fact_json, open('output/{}_{}_graph_clean_facts_chatgpt_openIE.{}_{}.{}.subset.json'.format(dataset, graph_type, phrase_type, extraction_type, version), 'w'))
-
         pickle.dump(kb_phrase_dict, open('output/{}_{}_graph_phrase_dict_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
         pickle.dump(lose_fact_dict, open('output/{}_{}_graph_fact_dict_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
 
-        graph_json = {}
+        docs_to_facts = {}  # (num docs, num facts)
+        facts_to_phrases = {}  # (num facts, num phrases)
 
-        docs_to_facts = {}  # (Num Docs, Num Facts)
-        facts_to_phrases = {}  # (Num Facts, Num Phrases)
-        graph = {}  # (Num Phrases, Num Phrases)
-
-        num_triple_edges = 0
-        num_doc_edges = 0
-
-        # Creating Adjacency and Document to Phrase Matrices
         for doc_id, triples in tqdm(enumerate(triple_tuples), total=len(triple_tuples)):
-
-            doc_phrases = []
-            fact_edges = []  # directed edges between head/tail entities of each triple
-
-            # Iterate over triples
             for triple in triples:
                 triple = tuple(triple)
+                if len(triple) != 3:
+                    continue
                 fact_id = lose_fact_dict[triple]
-
-                if len(triple) == 3:
-                    relation = triple[1]
-                    triple = np.array(triple)[[0, 2]]
-                    docs_to_facts[(doc_id, fact_id)] = 1
-
-                    for i, phrase in enumerate(triple):
-                        phrase_id = kb_phrase_dict[phrase]
-                        doc_phrases.append(phrase_id)
-
-                        facts_to_phrases[(fact_id, phrase_id)] = 1
-                        for phrase2 in triple[i + 1:]:
-                            phrase2_id = kb_phrase_dict[phrase2]
-
-                            fact_edge_r = (phrase_id, phrase2_id)
-                            fact_edge_l = (phrase2_id, phrase_id)
-
-                            fact_edges.append(fact_edge_r)
-                            fact_edges.append(fact_edge_l)
-
-                            graph[fact_edge_r] = graph.get(fact_edge_r, 0.0) + inter_triple_weight
-                            graph[fact_edge_l] = graph.get(fact_edge_l, 0.0) + inter_triple_weight
-
-                            phrase_edges = graph_json.get(phrase, {})
-                            edge = phrase_edges.get(phrase2, ('triple', 0))
-                            phrase_edges[phrase2] = ('triple', edge[1] + 1)
-                            graph_json[phrase] = phrase_edges
-
-                            phrase_edges = graph_json.get(phrase2, {})
-                            edge = phrase_edges.get(phrase, ('triple', 0))
-                            phrase_edges[phrase] = ('triple', edge[1] + 1)
-                            graph_json[phrase2] = phrase_edges
-
-                            num_triple_edges += 1
+                docs_to_facts[(doc_id, fact_id)] = 1
+                for phrase in (triple[0], triple[2]):
+                    phrase_id = kb_phrase_dict[phrase]
+                    facts_to_phrases[(fact_id, phrase_id)] = 1
 
         pickle.dump(docs_to_facts, open('output/{}_{}_graph_doc_to_facts_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
         pickle.dump(facts_to_phrases, open('output/{}_{}_graph_facts_to_phrases_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
 
-        docs_to_facts_mat = csr_array(([int(v) for v in docs_to_facts.values()], ([int(e[0]) for e in docs_to_facts.keys()], [int(e[1]) for e in docs_to_facts.keys()])),
+        docs_to_facts_mat = csr_array(([int(v) for v in docs_to_facts.values()],
+                                       ([int(e[0]) for e in docs_to_facts.keys()], [int(e[1]) for e in docs_to_facts.keys()])),
                                       shape=(len(triple_tuples), len(lose_facts)))
-        facts_to_phrases_mat = csr_array(([int(v) for v in facts_to_phrases.values()], ([e[0] for e in facts_to_phrases.keys()], [e[1] for e in facts_to_phrases.keys()])),
+        facts_to_phrases_mat = csr_array(([int(v) for v in facts_to_phrases.values()],
+                                          ([e[0] for e in facts_to_phrases.keys()], [e[1] for e in facts_to_phrases.keys()])),
                                          shape=(len(lose_facts), len(unique_phrases)))
 
         pickle.dump(docs_to_facts_mat, open('output/{}_{}_graph_doc_to_facts_csr_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
-        pickle.dump(facts_to_phrases_mat,
-                    open('output/{}_{}_graph_facts_to_phrases_csr_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
-
-        pickle.dump(graph, open('output/{}_{}_graph_fact_doc_edges_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
-
-        print('Saving Graph')
+        pickle.dump(facts_to_phrases_mat, open('output/{}_{}_graph_facts_to_phrases_csr_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
 
         stat_df = [('Total Phrases', len(phrases)),
                    ('Unique Phrases', len(unique_phrases)),
@@ -204,8 +137,7 @@ def create_graph(dataset: str, extraction_type: str, index_llm_model: str, retri
 
         print(pd.DataFrame(stat_df).set_index(0))
 
-        json.dump(graph_json, open('output/{}_{}_graph_chatgpt_openIE.{}_{}.{}.subset.json'.format(dataset, graph_type, phrase_type,
-                                                                                                   extraction_type, version), 'w'))
+        print('Saving Graph')
 
 
 if __name__ == '__main__':
