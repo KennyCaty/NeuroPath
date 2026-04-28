@@ -1,21 +1,15 @@
 import sys
-"""
 
-"""
 sys.path.append('.')
-import os
 import time
-import ipdb
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.langchain_util import init_langchain_model  # kept for side effects and downstream re-imports
 from transformers.hf_argparser import string_to_bool
 import argparse
 import json
 import numpy as np
 from tqdm import tqdm
-from glob import glob
 from threading import Lock
 from neuropath import NeuroPath
 
@@ -128,8 +122,6 @@ if __name__ == '__main__':
     parser.add_argument('--max_hop', type=int, default=2)
     parser.add_argument('--top_k', type=int, default=10, help='retrieving k documents at each step')
     parser.add_argument('--dpr_only', type=str, default='f')
-    parser.add_argument('--graph_alg', type=str, default='kg_path')
-    parser.add_argument('--wo_node_spec', action='store_true')
     parser.add_argument('--force_retry', action='store_true')
     parser.add_argument('--one_shot', type=str, default='f')
     args = parser.parse_args()
@@ -143,26 +135,18 @@ if __name__ == '__main__':
                     index_llm=args.index_llm, index_llm_model=args.index_llm_model,
                     rag_llm=args.rag_llm, rag_llm_model=args.rag_llm_model,
                     graph_creating_retriever_name=args.retriever,
-                    node_specificity=not (args.wo_node_spec), graph_type='facts',
-                    dpr_only=dpr_only, graph_alg=args.graph_alg, max_hop=args.max_hop)
+                    graph_type='facts',
+                    dpr_only=dpr_only, max_hop=args.max_hop)
 
     data = json.load(open(f'data/{args.dataset}.json', 'r'))
     corpus = json.load(open(f'data/{args.dataset}_corpus.json', 'r'))
 
-    if dpr_only:
-        dpr_only_str = 'dpr_only'
-    else:
-        dpr_only_str = 'neuropath'
+    dpr_only_str = 'dpr_only' if dpr_only else 'neuropath'
 
-    if args.graph_alg == 'kg_path':
-        output_path = f'output/retrieved/retrieved_results_{args.dataset}_{dpr_only_str}_{rag.graph_creating_retriever_name_processed}_{rag_llm_model_processed}_top_{args.top_k}'
-    else:
-        output_path = f'output/retrieved/retrieved_results_{args.dataset}_{dpr_only_str}_{rag.graph_creating_retriever_name_processed}_{rag_llm_model_processed}_top_{args.top_k}_{args.graph_alg}'
-
-    if args.wo_node_spec:
-        output_path += 'wo_node_spec'
-
-    output_path += '.json'
+    output_path = (
+        f'output/retrieved/retrieved_results_{args.dataset}_{dpr_only_str}_'
+        f'{rag.graph_creating_retriever_name_processed}_{rag_llm_model_processed}_top_{args.top_k}.json'
+    )
 
     k_list = [1, 2, 3, 4, 5, 10, 15, 20, 30, 40, 50, 80, 100]
     total_recall = {k: 0 for k in k_list}
