@@ -97,9 +97,7 @@ class RetrievalModule:
         queries = string_df[string_df.type == 'query']
         kb = string_df[string_df.type == 'kb']
 
-        # 不需要扩展相似边
-        # nearest_neighbors = self.retrieve_knn(queries.strings.values, kb.strings.values)
-        # pickle.dump(nearest_neighbors, open(self.retrieval_name_dir + '/nearest_neighbor_{}.p'.format(string_filename.split('/')[1].split('.')[0]), 'wb'))
+        # synonym edges not required in the current pipeline
 
     def get_precomputed_plm_vectors(self, retrieval_name_dir):
 
@@ -343,7 +341,6 @@ class RetrievalModule:
 
             stacked_D.append(D)
             stacked_I.append(I)
-            # 在每次迭代后清理不再需要的对象
             del D, I
             gc.collect()
 
