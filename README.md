@@ -53,6 +53,9 @@ export TRANSFORMERS_OFFLINE=1  # Optional
 
 ### Run NeuroPath
 Please first check the script content and specify a specific dataset for the experiment. Specific parameters can be set in the script.
+
+The indexing script `src/setup_neuropath_main_exps.sh` takes the index LLM model name as its 3rd positional argument (default `gpt-4o-mini`). The retrieval script `src/run_neuropath_main_exps.sh` accepts `--index_llm` / `--index_llm_model` (must match the indexing step so graph files resolve) and `--rag_llm` / `--rag_llm_model` (used for path tracking and QA). Use `openai` as the provider for both OpenAI and OpenAI-compatible endpoints (e.g. vLLM); set the corresponding `INDEX_LLM_*` / `RAG_LLM_*` env vars above when the two roles need different endpoints.
+
 #### Indexing
 ```shell
 bash src/setup_neuropath_main_exps.sh
