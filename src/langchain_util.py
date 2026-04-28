@@ -37,26 +37,22 @@ def _resolve_openai_credentials(role: str | None):
 
 def init_langchain_model(llm: str, model_name: str = "gpt-4o-mini", temperature: float = 0.0, max_retries=5, timeout=60, seed=42, role: str | None = None, **kwargs):
     """
-    Initialize a language model from the langchain library.
-    :param llm: The LLM to use, e.g., 'openai', 'together'
-    :param model_name: The model name to use, e.g., 'gpt-3.5-turbo'
-    :param role: 'index' | 'rag' | None. Selects which env vars provide api_key/base_url for OpenAI-compatible endpoints.
+    Initialize a LangChain chat model. Only the OpenAI-compatible provider is supported;
+    self-hosted backends such as vLLM or Ollama should be accessed via their OpenAI-compatible
+    endpoints using llm='openai' with the corresponding base_url.
+
+    :param llm: provider name, must be 'openai'.
+    :param model_name: model name, e.g. 'gpt-4o-mini'.
+    :param role: 'index' | 'rag' | None. Selects which env vars provide api_key/base_url.
     """
-    if llm == 'openai':
-        from langchain_openai import ChatOpenAI
-        api_key, base_url = _resolve_openai_credentials(role)
-        return ChatOpenAI(api_key=api_key, base_url=base_url, model=model_name, temperature=temperature, max_retries=max_retries, timeout=timeout, seed=seed, **kwargs)
-    elif llm == 'together':
-        from langchain_together import ChatTogether
-        return ChatTogether(api_key=os.environ.get("TOGETHER_API_KEY"), model=model_name, temperature=temperature, **kwargs)
-    elif llm == 'ollama':
-        from langchain_ollama import ChatOllama
-        return ChatOllama(model=model_name)
-    elif llm == 'llama.cpp':
-        from langchain_community.chat_models import ChatLlamaCpp
-        return ChatLlamaCpp(model_path=model_name, verbose=True)
-    else:
-        raise NotImplementedError(f"LLM '{llm}' not implemented yet.")
+    if llm != 'openai':
+        raise NotImplementedError(
+            f"LLM provider '{llm}' is not supported. Use 'openai' (works for OpenAI and any "
+            "OpenAI-compatible endpoint such as vLLM or Ollama's /v1 API)."
+        )
+    from langchain_openai import ChatOpenAI
+    api_key, base_url = _resolve_openai_credentials(role)
+    return ChatOpenAI(api_key=api_key, base_url=base_url, model=model_name, temperature=temperature, max_retries=max_retries, timeout=timeout, seed=seed, **kwargs)
 
 
 if __name__ == '__main__':
