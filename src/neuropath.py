@@ -43,16 +43,19 @@ def extract_json_dict(text):
 
 class NeuroPath:
 
-    def __init__(self, corpus_name='hotpotqa', extraction_model='openai', extraction_model_name='gpt-4o-mini',
+    def __init__(self, corpus_name='hotpotqa',
+                 index_llm='openai', index_llm_model='gpt-4o-mini',
+                 rag_llm='openai', rag_llm_model='gpt-4o-mini',
                  graph_creating_retriever_name='facebook/contriever', extraction_type='ner', graph_type='facts', node_specificity=True,
                  dpr_only=False, graph_alg='kg_path', corpus_path=None,
                  linking_retriever_name=None, max_hop=2):
 
         self.max_hop = max_hop
         self.corpus_name = corpus_name
-        self.extraction_model_name = extraction_model_name
-        self.extraction_model_name_processed = extraction_model_name.replace('/', '_')
-        self.client = init_langchain_model(extraction_model, extraction_model_name)
+        self.index_llm_model = index_llm_model
+        self.index_llm_model_processed = index_llm_model.replace('/', '_')
+        # rag_llm drives retrieval-time path tracking and query NER
+        self.client = init_langchain_model(rag_llm, rag_llm_model, role='rag')
         assert graph_creating_retriever_name
         if linking_retriever_name is None:
             linking_retriever_name = graph_creating_retriever_name
@@ -578,15 +581,15 @@ Paths:\n"""
         self.dataset_df['paragraph'] = [p['title'] + '\n' + p['text'] for p in self.corpus]
 
     def load_index_files(self):
-        index_file_pattern = 'output/openie_{}_results_{}_{}_*.json'.format(self.corpus_name, self.extraction_type, self.extraction_model_name_processed)
+        index_file_pattern = 'output/openie_{}_results_{}_{}_*.json'.format(self.corpus_name, self.extraction_type, self.index_llm_model_processed)
         possible_files = glob(index_file_pattern)
         if len(possible_files) == 0:
             self.logger.critical(f'No extraction files found: {index_file_pattern} ; please check if working directory is correct or if the extraction has been done.')
             return
         max_samples = np.max(
-            [int(file.split('{}_'.format(self.extraction_model_name_processed))[1].split('.json')[0]) for file in possible_files])
+            [int(file.split('{}_'.format(self.index_llm_model_processed))[1].split('.json')[0]) for file in possible_files])
         extracted_file = json.load(open(
-            'output/openie_{}_results_{}_{}_{}.json'.format(self.corpus_name, self.extraction_type, self.extraction_model_name_processed, max_samples),
+            'output/openie_{}_results_{}_{}_{}.json'.format(self.corpus_name, self.extraction_type, self.index_llm_model_processed, max_samples),
             'r'))
 
         self.extracted_triples = extracted_file['docs']
@@ -611,8 +614,8 @@ Paths:\n"""
             self.dataset_df = pd.DataFrame([p['passage'] for p in self.extracted_triples])
             self.dataset_df['paragraph'] = [s['passage'] for s in self.extracted_triples]
 
-        if self.extraction_model_name != 'gpt-3.5-turbo-1106':
-            self.extraction_type = self.extraction_type + '_' + self.extraction_model_name_processed
+        if self.index_llm_model != 'gpt-3.5-turbo-1106':
+            self.extraction_type = self.extraction_type + '_' + self.index_llm_model_processed
         self.kb_node_phrase_to_id = pickle.load(open(
             'output/{}_{}_graph_phrase_dict_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type,
                                                                       self.extraction_type, self.version), 'rb'))
