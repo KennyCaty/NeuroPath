@@ -302,9 +302,6 @@ if __name__ == '__main__':
     if num_processes > 1:
         with Pool(processes=num_processes) as pool:
             outputs = pool.map(extract_openie_from_passages, args)
-        # 使用 ThreadPoolExecutor 实现多线程
-        # with ThreadPoolExecutor(max_workers=num_processes) as executor:
-        #     outputs = list(executor.map(extract_openie_from_passages, args))
     else:
         outputs = [extract_openie_from_passages(arg) for arg in args]
 
