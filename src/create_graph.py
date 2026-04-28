@@ -153,38 +153,27 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
     kb['type'] = 'kb'
     kb_query = pd.concat([kb, query_df])
     kb_query.to_csv('output/query_to_kb.tsv', sep='\t')
-    # 生成了三个文件 用于后续扩展相似节点
 
 
     if create_graph_flag:
         print('Creating Graph')
-        # 每一个 id-实体 json的列表
         node_json = [{'idx': i, 'name': p} for i, p in enumerate(unique_phrases)]
         kb_phrase_df = pd.DataFrame(unique_phrases)
-        # 从实体到id的映射dict
         kb_phrase_dict = {p: i for i, p in enumerate(unique_phrases)}
-        
-        # 装三元组tuple的列表 [(h, r, t), ...]
+
         lose_facts = []
 
         for triples in triple_tuples:
             lose_facts.extend([tuple(t) for t in triples])
 
-        # 三元组到id的映射dict
         lose_fact_dict = {f: i for i, f in enumerate(lose_facts)}
         fact_json = [{'idx': i, 'head': t[0], 'relation': t[1], 'tail': t[2]} for i, t in enumerate(lose_facts)]
 
-        # 以下信息都是json对象的列表，每个json对象包括id和其他信息
-        # doc信息
         json.dump(passage_json, open('output/{}_{}_graph_passage_chatgpt_openIE.{}_{}.{}.subset.json'.format(dataset, graph_type, phrase_type, extraction_type, version), 'w'))
-        # 实体节点信息
         json.dump(node_json, open('output/{}_{}_graph_nodes_chatgpt_openIE.{}_{}.{}.subset.json'.format(dataset, graph_type, phrase_type, extraction_type, version), 'w'))
-        # 三元组信息 {'idx': xx, 'head': xx, 'relation': xx, 'tail': xx}
         json.dump(fact_json, open('output/{}_{}_graph_clean_facts_chatgpt_openIE.{}_{}.{}.subset.json'.format(dataset, graph_type, phrase_type, extraction_type, version), 'w'))
 
-        # 从实体到id的映射dict
         pickle.dump(kb_phrase_dict, open('output/{}_{}_graph_phrase_dict_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
-        # 三元组到id的映射dict
         pickle.dump(lose_fact_dict, open('output/{}_{}_graph_fact_dict_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
 
         graph_json = {}
@@ -198,45 +187,37 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
 
         # Creating Adjacency and Document to Phrase Matrices
         for doc_id, triples in tqdm(enumerate(triple_tuples), total=len(triple_tuples)):
-            
-            doc_phrases = [] # 没有什么用
-            fact_edges = []  # 存放三元组的有向关系（元组）， 首->尾， 尾->首
+
+            doc_phrases = []
+            fact_edges = []  # directed edges between head/tail entities of each triple
 
             # Iterate over triples
             for triple in triples:
                 triple = tuple(triple)
-                # 拿到三元组id
                 fact_id = lose_fact_dict[triple]
 
                 if len(triple) == 3:
                     relation = triple[1]
-                    # 首尾节点
                     triple = np.array(triple)[[0, 2]]
-                    # 文档id 到 三元组id = 1 表示文档有这个三元组
                     docs_to_facts[(doc_id, fact_id)] = 1
 
                     for i, phrase in enumerate(triple):
-                        # 第一次迭代是首节点id
                         phrase_id = kb_phrase_dict[phrase]
                         doc_phrases.append(phrase_id)
 
-                        # 表示这个三元组有这个实体
                         facts_to_phrases[(fact_id, phrase_id)] = 1
-                        # 对于尾节点
                         for phrase2 in triple[i + 1:]:
                             phrase2_id = kb_phrase_dict[phrase2]
-                            
-                            fact_edge_r = (phrase_id, phrase2_id) # (首节点id, 尾节点id)
-                            fact_edge_l = (phrase2_id, phrase_id) # (尾节点id, 首节点id)  
+
+                            fact_edge_r = (phrase_id, phrase2_id)
+                            fact_edge_l = (phrase2_id, phrase_id)
 
                             fact_edges.append(fact_edge_r)
                             fact_edges.append(fact_edge_l)
 
-                            # 赋予边（实体， 实体）权重，如果存在就再加一个inter_triple_weight
                             graph[fact_edge_r] = graph.get(fact_edge_r, 0.0) + inter_triple_weight
                             graph[fact_edge_l] = graph.get(fact_edge_l, 0.0) + inter_triple_weight
 
-                            # 拿到phrase的所有边信息，以dict返回，每一个元素 是 key（另一个节点）: ('triple, 出现次数)
                             phrase_edges = graph_json.get(phrase, {})
                             edge = phrase_edges.get(phrase2, ('triple', 0))
                             phrase_edges[phrase2] = ('triple', edge[1] + 1)
@@ -249,15 +230,11 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
 
                             num_triple_edges += 1
 
-        # dict：key为文档id到三元组id，值为1表示文档有这个三元组
         pickle.dump(docs_to_facts, open('output/{}_{}_graph_doc_to_facts_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
-        # dict：key为三元组id到实体id，值为1表示三元组有这个实体
         pickle.dump(facts_to_phrases, open('output/{}_{}_graph_facts_to_phrases_{}_{}.{}.subset.p'.format(dataset, graph_type, phrase_type, extraction_type, version), 'wb'))
 
-        # 文档-三元组矩阵 存储哪些文档连接到哪些三元组
         docs_to_facts_mat = csr_array(([int(v) for v in docs_to_facts.values()], ([int(e[0]) for e in docs_to_facts.keys()], [int(e[1]) for e in docs_to_facts.keys()])),
                                       shape=(len(triple_tuples), len(lose_facts)))
-        # 三元组-实体矩阵，同理
         facts_to_phrases_mat = csr_array(([int(v) for v in facts_to_phrases.values()], ([e[0] for e in facts_to_phrases.keys()], [e[1] for e in facts_to_phrases.keys()])),
                                          shape=(len(lose_facts), len(unique_phrases)))
 
@@ -278,7 +255,6 @@ def create_graph(dataset: str, extraction_type: str, extraction_model: str, retr
 
             print('Augmenting Graph from Similarity')
 
-            # graph存储每个实体到每个实体的边的权重（如果有三元组代表h与t存在边）
             graph_plus = copy.deepcopy(graph)
 
             kb_similarity = {processing_phrases(k): v for k, v in kb_similarity.items()}
