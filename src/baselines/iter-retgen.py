@@ -106,11 +106,8 @@ class LMRetriever(DocumentRetriever):
     def rank_docs(self, query: str, top_k: int):
         try:
             query_embedding = self.model.encode(query, 
-                                                instruction = 'Given a question, retrieve relevant documents that best answer the question.'  # hippo2用于检索文档
-                                                # instruction = 'Given a question, retrieve passages that answer the question'
-                                                # instruction = 'Given a web search query, retrieve relevant passages that answer the query'
+                                                instruction = 'Given a question, retrieve relevant documents that best answer the question.'
                                                )
-            # query_embedding = self.model.encode("Instruct: Given a question, retrieve relevant documents that best answer the question.\nQuery: "+query)
             
         except Exception as e:
             print("[encode error]", e)
@@ -174,10 +171,10 @@ class IterRetGen:
 
     def inference(self, workers=10, results:dict=None) -> list[dict]:
         print("Start inference")
-        lock = Lock() # 保证修改变量的操作是原子的
-        total_processing_time = 0  # 总处理时间
-        valid_sample_count = 0     # 有效样本数量
-        total_tokens = 0           # 总消耗tokens
+        lock = Lock()  # ensure atomic state updates across threads
+        total_processing_time = 0
+        valid_sample_count = 0
+        total_tokens = 0
         total_recall = {k: 0 for k in self.k_list}
         
         with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -189,8 +186,8 @@ class IterRetGen:
             for future in tqdm(as_completed(futures), total=len(data), desc='Parallel Iter-RetGen'):
                 idx, recall, retrieved_passages, thoughts, tokens, elapsed_time = future.result()
                 with lock:
-                    total_processing_time += elapsed_time  # 计算时间
-                    total_tokens += tokens # 计算tokens
+                    total_processing_time += elapsed_time
+                    total_tokens += tokens
                     valid_sample_count += 1
                     # print metrics
                     for k in k_list:
@@ -207,7 +204,6 @@ class IterRetGen:
                 if idx % 50 == 0:
                     with open(output_path, 'w') as f:
                         json.dump(results, f)
-            # 打印消耗
             print(f"Total processing time: {total_processing_time:.4f} seconds")
             print(f"Average processing time per sample: {total_processing_time/valid_sample_count:.4f} seconds")
             print(f"Total tokens: {total_tokens} tokens")
@@ -233,7 +229,7 @@ class IterRetGen:
         return prompt, docs
 
     def process_sample(self, idx, sample, args, corpus, retriever, client, processed_ids):
-        start_time = time.time()  # 记录开始时间
+        start_time = time.time()
         # Check if the sample has already been processed
         if args.dataset in ['hotpotqa', '2wikimultihopqa']:
             sample_id = sample['_id']
@@ -260,15 +256,13 @@ class IterRetGen:
             docs, scores = retrieve_step(query, corpus, self.topk, self.retriever, args.dataset)
         except Exception as e:
             print("[retrieve_step error]: ", e)
-        # 模仿IRCOT进行增量添加文档
-        # retrieved_passages_dict = {passage: score for passage, score in zip(docs, scores)}
         
         thoughts = []
         
         cur_iter = 1
         total_tokens = 0
 
-        # 第一次的为空（上一轮的answer）
+        # previous answer starts empty
         prev_answer = ""
         while cur_iter < self.max_iter:
             cur_iter += 1
@@ -309,18 +303,6 @@ class IterRetGen:
                 q = f"{q} {prev_answer}"
 
             new_docs, new_scores = retrieve_step(q, corpus, self.topk, self.retriever, args.dataset)
-            # 增量式添加文档
-            # for passage, score in zip(new_docs, new_scores):
-            #     if passage in retrieved_passages_dict:
-            #         retrieved_passages_dict[passage] = max(retrieved_passages_dict[passage], score)
-            #     else:
-            #         retrieved_passages_dict[passage] = score
-
-            # retrieved_passages, scores = zip(*retrieved_passages_dict.items())
-
-            # sorted_passages_scores = sorted(zip(retrieved_passages, scores), key=lambda x: x[1], reverse=True)
-            # retrieved_passages, scores = zip(*sorted_passages_scores)
-            # docs = retrieved_passages
             docs = new_docs
             
         # calculate recall
@@ -415,24 +397,6 @@ class IterRetGen:
         return results
 
 
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="llama-8B")
-    parser.add_argument(
-        "--dataset",
-        type=str,
-        choices=["hotpotQA", "musique", "2WikiMQA", "nq_rear", "popqa", 'multihoprag', 'multihoprag_chunks'],
-        default="musique",
-    )
-    parser.add_argument("--split", type=str, default="demo")
-    parser.add_argument("--retriever", type=str, default="contriever")
-    parser.add_argument("--workers", type=int, default=10)
-    parser.add_argument("--max_iter", type=int, default=3)
-    args = parser.parse_args()
-    return args
-
-    
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, choices=['hotpotqa', 'musique', '2wikimultihopqa', 'nq_rear', 'popqa', 'multihoprag', 'multihoprag_chunks', 'narrativeqa_dev_10_doc'], required=True)
@@ -470,22 +434,22 @@ if __name__ == "__main__":
     elif args.dataset == 'nq_rear':
         data = json.load(open('data/nq_rear.json', 'r'))
         corpus = json.load(open('data/nq_rear_corpus.json', 'r'))
-        prompt_template = prompts.ITER_RETGEN_WIKIMQA_PROMPT  # 复用提示词
+        prompt_template = prompts.ITER_RETGEN_WIKIMQA_PROMPT  # reuse the prompt
         max_steps = args.max_steps if args.max_steps is not None else 2
     elif args.dataset == 'popqa':
         data = json.load(open('data/popqa.json', 'r'))
         corpus = json.load(open('data/popqa_corpus.json', 'r'))
-        prompt_template = prompts.ITER_RETGEN_WIKIMQA_PROMPT  # 复用提示词
+        prompt_template = prompts.ITER_RETGEN_WIKIMQA_PROMPT  # reuse the prompt
         max_steps = args.max_steps if args.max_steps is not None else 2
     elif args.dataset == 'multihoprag' or args.dataset == 'multihoprag_chunks':
         data = json.load(open(f'data/{args.dataset}.json', 'r'))
         corpus = json.load(open(f'data/{args.dataset}_corpus.json', 'r'))
-        prompt_template = prompts.ITER_RETGEN_WIKIMQA_PROMPT  # 复用提示词
+        prompt_template = prompts.ITER_RETGEN_WIKIMQA_PROMPT  # reuse the prompt
         max_steps = args.max_steps if args.max_steps is not None else 2
     elif args.dataset == 'narrativeqa_dev_10_doc':
         data = json.load(open(f'data/{args.dataset}.json', 'r'))
         corpus = json.load(open(f'data/{args.dataset}_corpus.json', 'r'))
-        prompt_template = prompts.ITER_RETGEN_WIKIMQA_PROMPT  # 复用提示词
+        prompt_template = prompts.ITER_RETGEN_WIKIMQA_PROMPT  # reuse the prompt
         max_steps = args.max_steps if args.max_steps is not None else 2
     else:
         raise NotImplementedError(f'Dataset {args.dataset} not implemented')
