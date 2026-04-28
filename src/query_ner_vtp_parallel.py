@@ -82,7 +82,6 @@ def ner_vtp_extraction(client, text: str):
     return response_content, total_tokens
 
 
-# 提取NER和VTP
 def run_ner_vtp_on_texts(texts):
     client = init_langchain_model('openai', "gpt-4o-mini")  # LangChain model
     outputs = []
