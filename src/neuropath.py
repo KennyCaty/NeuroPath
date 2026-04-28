@@ -620,14 +620,6 @@ Paths:\n"""
             'output/{}_{}_graph_fact_dict_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type, self.phrase_type,
                                                                     self.extraction_type, self.version), 'rb'))
 
-        try:
-            self.relations_dict = pickle.load(open(
-                'output/{}_{}_graph_relation_dict_{}_{}_{}.{}.subset.p'.format(
-                    self.corpus_name, self.graph_type, self.phrase_type,
-                    self.extraction_type, self.graph_creating_retriever_name_processed, self.version), 'rb'))
-        except:
-            pass
-
         self.lose_facts = list(self.lose_fact_dict.keys())
         self.lose_facts = [self.lose_facts[i] for i in np.argsort(list(self.lose_fact_dict.values()))]
         self.phrases = np.array(list(self.kb_node_phrase_to_id.keys()))[np.argsort(list(self.kb_node_phrase_to_id.values()))]
