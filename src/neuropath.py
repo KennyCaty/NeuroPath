@@ -9,10 +9,6 @@ import igraph as ig
 import numpy as np
 import pandas as pd
 import torch
-# from colbert import Searcher
-# from colbert.data import Queries
-# from colbert.infra import RunConfig, Run, ColBERTConfig
-# from src.colbertv2_indexing import colbertv2_index
 from tqdm import tqdm
 
 from src.langchain_util import init_langchain_model, LangChainModel
@@ -24,8 +20,6 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 import time
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'FALSE'
-
-COLBERT_CKPT_DIR = "exp/colbertv2.0"
 
 
 
@@ -103,7 +97,6 @@ class NeuroPath:
         self.embed_model = init_embedding_model(self.linking_retriever_name)
         self.dpr_only = dpr_only
         self.corpus_path = corpus_path
-        ## 新增
         self.fact_json = json.load(open('output/{}_{}_graph_clean_facts_chatgpt_openIE.{}_{}_gpt-4o-mini.{}.subset.json'.format(corpus_name, graph_type, self.phrase_type, extraction_type, self.version), 'r'))
 
         # Loading Important Corpus Files
@@ -122,52 +115,29 @@ class NeuroPath:
             # Loading Doc Embeddings
             self.get_dpr_doc_embedding()
 
-        # if self.linking_retriever_name == 'colbertv2':
-        #     if self.dpr_only is False or self.doc_ensemble:
-        #         colbertv2_index(self.phrases.tolist(), self.corpus_name, 'phrase', self.colbert_config['phrase_index_name'], overwrite=True)
-        #         with Run().context(RunConfig(nranks=1, experiment="phrase", root=self.colbert_config['root'])):
-        #             config = ColBERTConfig(root=self.colbert_config['root'], )
-        #             self.phrase_searcher = Searcher(index=self.colbert_config['phrase_index_name'], config=config, verbose=0)
-        #     if self.doc_ensemble or dpr_only:
-        #         colbertv2_index(self.dataset_df['paragraph'].tolist(), self.corpus_name, 'corpus', self.colbert_config['doc_index_name'], overwrite=True)
-        #         with Run().context(RunConfig(nranks=1, experiment="corpus", root=self.colbert_config['root'])):
-        #             config = ColBERTConfig(root=self.colbert_config['root'], )
-        #             self.corpus_searcher = Searcher(index=self.colbert_config['doc_index_name'], config=config, verbose=0)
-
         self.statistics = {}
         self.ensembling_debug = []
         if qa_model is None:
             qa_model = LangChainModel('openai', 'gpt-3.5-turbo')
         self.qa_model = init_langchain_model(qa_model.provider, qa_model.model_name)
 
-        ## ===== 新增  phrase faiss index  =====
+        # ===== Build phrase faiss index for pseudo-coreference resolution =====
         import faiss
-         # 归一化 embedding（用于余弦相似度）
         faiss.normalize_L2(self.kb_node_phrase_embeddings)
-        # 创建GPU资源
         resource = faiss.StandardGpuResources()
-        # 创建GPU索引
         index = faiss.IndexFlatIP(self.kb_node_phrase_embeddings.shape[1])
-        # 将索引转移到GPU
         gpu_index = faiss.index_cpu_to_gpu(resource, 0, index)
-        # 添加 embedding 到索引
         gpu_index.add(self.kb_node_phrase_embeddings)
-        # 设置检索参数
-        k = 5  # 检索最相似的 5 个（不包括自身）
+        k = 5  # retrieve top-5 most similar (excluding self)
 
-        # 执行搜索
         distances, indices = gpu_index.search(self.kb_node_phrase_embeddings, k)
 
-        # 过滤相似度低于 0.85 的结果 # Pseudo-Coreference Resolution
+        # Pseudo-Coreference Resolution: keep neighbors with similarity >= 0.8
         self.coreference_resolution = []
         for i in range(len(self.kb_node_phrase_embeddings)):
             valid_indices = [idx for idx, dist in zip(indices[i], distances[i]) if dist >= 0.8 and idx != i]
             self.coreference_resolution.append(valid_indices)
-
-        # # 输出结果
-        # for i, neighbors in enumerate(filtered_results[:20]):
-        #     print(f"Embedding {i} 的相似 embedding: {neighbors}")
-        ## ======= END ============
+        # ======================================================================
 
 
 
@@ -272,8 +242,7 @@ Paths:\n"""
         if len(path_dict['paths']) - old_path_len <= filter_k:
             return path_dict
         
-        # print("触发剪枝")
-        # 只剪枝扩展的部分
+        # only prune newly expanded paths
         paths = []
         for i in  range(old_path_len, len(path_dict['paths'])):
             paths.append(path_dict['paths'][i].replace("->", " "))
@@ -296,61 +265,51 @@ Paths:\n"""
             indices.append(i+old_path_len)
         
         
-        # print("Top-k 最大值索引:", topk_indices)
         path_dict['paths'] = [path_dict['paths'][i] for i in indices]
         path_dict['link_phrases'] = [path_dict['link_phrases'][i] for i in indices]
         path_dict['visited_docs'] = [path_dict['visited_docs'][i] for i in indices]
-        # used_time = time.time() - start_time
-        # print("pruning used time: ",used_time)
         return path_dict
     
 
     def Expand_by_llm(self, path_dict, query_embedding, query, vtp=None, one_shot=False): 
         total_tokens = 0
-        # 第一轮
+        # --- First round ---
         if path_dict['paths'] == []:
             new_link_phrases = []
             expand_phrase_ids = self.expand_seed(path_dict['link_phrases'])
             for link_phrase_id in expand_phrase_ids:
-                if self.phrases[link_phrase_id] == 'NaN' or self.phrases[link_phrase_id] == 'Null' or self.phrases[link_phrase_id] == '':  # 为空，不需要扩展
+                if self.phrases[link_phrase_id] == 'NaN' or self.phrases[link_phrase_id] == 'Null' or self.phrases[link_phrase_id] == '':  # empty phrase, skip
                     continue
-                # 找到这个phrase id 对应的doc raw
+                # docs containing this phrase
                 doc_row = self.phrase_to_doc_mat[[link_phrase_id]].toarray()[0]
-                # 找到非零文档元素的索引列表
                 non_zero_doc_ids = np.nonzero(doc_row)[0].tolist()
-                # 筛选包含phrase的子路径
+                # collect sub-paths containing the phrase
                 for doc_id in non_zero_doc_ids:
                     target_facts_ids_list = self.docs_to_facts_mat[[doc_id]].toarray()[0]
                     non_zero_target_facts_ids = np.nonzero(target_facts_ids_list)[0].tolist()
-                    # 收集路径
                     
                     for facts_id in non_zero_target_facts_ids:
                         if self.facts_to_phrases_mat[facts_id, link_phrase_id] != 0:
                             triple_json = self.fact_json[facts_id]
-                            # triple_semantics = '[' + triple_json['head'] + ']' + ' -> ' + '(' + triple_json['relation'] + ')' + ' -> ' + '[' + triple_json['tail'] + ']' + '; '
                             triple_semantics =  triple_json['head'] + '->' + triple_json['relation'] + '->' + triple_json['tail'] + '; '
                             if triple_semantics in path_dict['paths']:
-                                # print("路径已存在")
                                 continue
                             head_id = self.kb_node_phrase_to_id[triple_json['head']]
                             tail_id = self.kb_node_phrase_to_id[triple_json['tail']]
-                            # 拿到子路径的另一个连接的phrase
+                            # the other phrase connected in the sub-path
                             if head_id==link_phrase_id:
                                 new_link_phrase_id = tail_id
-                                # assert tail_id != link_phrase_id
                             else:
                                 new_link_phrase_id = head_id
-                                # assert tail_id == link_phrase_id
                             new_link_phrases.append(new_link_phrase_id)
                             path_dict['paths'].append(triple_semantics)
                             path_dict['visited_docs'].append([doc_id])
                             
             path_dict['link_phrases'] = new_link_phrases
             
-            # 相似度剪枝
+            # similarity-based pruning
             path_dict = self.pruning(0, vtp, path_dict)
             
-            # print(path_dict)
             path_prompt = ''
             for i in range(len(path_dict['paths'])):
                 path_prompt += f"{i}: " + path_dict['paths'][i] + ' <expandable>: [' + self.phrases[path_dict['link_phrases'][i]] + ']' + '\n'
@@ -371,17 +330,13 @@ Paths:\n"""
                 path_dict['link_phrases'] = [path_dict['link_phrases'][i] for i in new_path_ids_list]
                 path_dict['visited_docs'] = [path_dict['visited_docs'][i] for i in new_path_ids_list]  
                 
-                # 
                 path_dict['current_chain'] = response_json['current_chain']
                 path_dict['expansion_requirements'] = response_json['expansion_requirements']
 
-                
-                # print("第二轮 llms返回path_dict: \n", path_dict)
             except Exception as e:
                 print(e, "response parsing error")
                 print(path_dict)
                 print(response_json)
-                # assert False
                 path_dict['valid_paths'] = []
                 path_dict['visited_docs'] = []
                 path_dict['valid_visited_docs'] = []
@@ -395,9 +350,9 @@ Paths:\n"""
            
            
            
-        # 之后的轮数
+        # --- Subsequent rounds ---
         else:
-            # 上一轮的有效路径数量
+            # number of valid paths from the previous round
             old_path_len = len(path_dict['paths'])
             
             new_link_phrases = []
@@ -407,47 +362,36 @@ Paths:\n"""
             for i in range(len(path_dict['paths'])):
                 path = path_dict['paths'][i]
                 if path not in path_dict['need_expand']:
-                    # print(f"路径:{path}被锁住")
                     locked_path.append(path)
-            for i in range(len(path_dict['paths'])):  # 对于每一个可扩展路径而言，分别扩充路径
-                # 如果路径可扩展
+            for i in range(len(path_dict['paths'])):  # expand each expandable path
                 if path_dict['paths'][i] not in locked_path:
                     path = path_dict['paths'][i]
                     seed_phrase_id = path_dict['link_phrases'][i]
-                    # 扩展相似短语 （共指消解）
+                    # expand similar phrases (coreference resolution)
                     expand_phrase_ids = self.expand_seed([seed_phrase_id])
                     visited_docs = path_dict['visited_docs'][i]
                     
                     for link_phrase_id in expand_phrase_ids:
-                        if self.phrases[link_phrase_id] == 'NaN' or self.phrases[link_phrase_id] == 'Null' or self.phrases[link_phrase_id] == '':  # 为空，不需要扩展
+                        if self.phrases[link_phrase_id] == 'NaN' or self.phrases[link_phrase_id] == 'Null' or self.phrases[link_phrase_id] == '':  # empty phrase, skip
                             continue
-                        # 找到这个phrase id 对应的doc raw
                         doc_row = self.phrase_to_doc_mat[[link_phrase_id]].toarray()[0]
-                        # 找到非零文档元素的索引列表
                         non_zero_doc_ids = np.nonzero(doc_row)[0].tolist()
-                        # 找到link_phrase对应的文档（未访问过）
+                        # docs linked to link_phrase (unvisited)
                         for doc_id in non_zero_doc_ids:
-                            # if doc_id not in visited_docs:
                             target_facts_ids_list = self.docs_to_facts_mat[[doc_id]].toarray()[0]
                             non_zero_target_facts_ids = np.nonzero(target_facts_ids_list)[0].tolist()
-                            # 收集路径
                             for facts_id in non_zero_target_facts_ids:
                                 if self.facts_to_phrases_mat[facts_id, link_phrase_id] != 0:
                                     triple_json = self.fact_json[facts_id]
-                                    # triple_semantics = '[' + triple_json['head'] + ']' + ' -> ' + '(' + triple_json['relation'] + ')' + ' -> ' + '[' + triple_json['tail'] + ']' + '; '
                                     triple_semantics =  triple_json['head'] + '->' + triple_json['relation'] + '->' + triple_json['tail'] + '; '
                                     head_id = self.kb_node_phrase_to_id[triple_json['head']]
                                     tail_id = self.kb_node_phrase_to_id[triple_json['tail']]
                                     if triple_semantics in path_dict['paths'] or triple_semantics in path_dict['need_expand']:
-                                        # print("路径已存在")
                                         continue
-                                    # 拿到子路径的另一个连接的phrase
                                     if head_id==link_phrase_id:
                                         new_link_phrase_id = tail_id
-                                        # assert tail_id != link_phrase_id
                                     else:
                                         new_link_phrase_id = head_id
-                                        # assert tail_id == link_phrase_id
                                     new_link_phrases.append(new_link_phrase_id)
                                     path_i = path
                                     path_i += triple_semantics
@@ -457,22 +401,19 @@ Paths:\n"""
             path_dict['paths'].extend(new_paths)
             path_dict['visited_docs'].extend(new_visited_docs)
             
-            # 相似度剪枝
+            # similarity-based pruning
             path_dict = self.pruning(old_path_len, vtp, path_dict)
             
             path_prompt = ''
             for i in range(len(path_dict['paths'])):
-                if path_dict['paths'][i] in locked_path: # 把无需扩展的锁住
-                    # path_prompt += f"{i}: " + path_dict['paths'][i] + ' <locked>' + '\n'
+                if path_dict['paths'][i] in locked_path:  # lock paths that do not need expansion
                     path_prompt += f"{i}: " + path_dict['paths'][i] + '\n'
-                elif path_dict['paths'][i] in path_dict['need_expand']: # 把已经扩展的锁住
-                    # path_prompt += f"{i}: " + path_dict['paths'][i] + ' <locked>' + '\n'
+                elif path_dict['paths'][i] in path_dict['need_expand']:  # lock already-expanded paths
                     path_prompt += f"{i}: " + path_dict['paths'][i] + '\n'
                 else:
                     path_prompt += f"{i}: " + path_dict['paths'][i] + ' <expandable>: [' + self.phrases[path_dict['link_phrases'][i]] + ']' + '\n'
                     
             
-            # print("第二轮 初始path_dict: \n", path_dict)
             response_json, tokens, llm_time = self.llm_path_track(path_prompt, query, one_shot)
             total_tokens += tokens
             try:
@@ -484,15 +425,10 @@ Paths:\n"""
                 new_path_ids_list.extend(expand_path_list)
                 new_path_ids_list = list(set(new_path_ids_list))
                 path_dict['need_expand'] = [path_dict['paths'][i] for i in expand_path_list]
-                # print("需要扩展的路径: ", path_dict['need_expand'] )
                 path_dict['paths'] = [path_dict['paths'][i] for i in new_path_ids_list]
-                # print("当先所有有效路径: ", path_dict['paths'] )
                 path_dict['link_phrases'] = [path_dict['link_phrases'][i] for i in new_path_ids_list]
-                # print("有效路径连接的节点: ", path_dict['link_phrases'] )
                 path_dict['visited_docs'] = [path_dict['visited_docs'][i] for i in new_path_ids_list]         
-                # print("第二轮 llms返回path_dict: \n", path_dict)
                 
-                # 
                 path_dict['current_chain'] = response_json['current_chain']
                 path_dict['expansion_requirements'] = response_json['expansion_requirements']
 
@@ -513,11 +449,11 @@ Paths:\n"""
         
     def get_path_filtered_docs(self, query_embedding, seed_phrase_ids, query, one_shot):
         unique_phrase_ids_set = set(seed_phrase_ids)
-        # 初始化
+        # init state
         path_dict = {}
         path_dict['paths'] = []
         path_dict['link_phrases'] = list(unique_phrase_ids_set)
-        path_dict['visited_docs'] = []  # 即访问的doc路径
+        path_dict['visited_docs'] = []  # visited doc ids per path
         path_dict['need_expand_ids'] = []
         flag = 1
         max_hop = self.max_hop
@@ -542,7 +478,7 @@ Paths:\n"""
                 flag = 0
             
         
-        #取文档id
+        # collect candidate doc ids
         candidate_docs = []
         candidate_paths = path_dict['valid_paths']
         visited_docs = path_dict['valid_visited_docs']
@@ -551,13 +487,11 @@ Paths:\n"""
                 if doc not in candidate_docs:
                     candidate_docs.append(doc)
 
-        # print("候选文档：", candidate_docs)
-        # assert False
         return candidate_docs, candidate_paths, total_tokens, all_thought, llm_time_for_one_q
        
  
     
-    def rank_docs(self, query: str, top_k, seed=1, expand_num=1, one_shot=False):  # 
+    def rank_docs(self, query: str, top_k, one_shot=False):
         """
         Rank documents based on the query
         @param query: the input phrase
@@ -572,60 +506,53 @@ Paths:\n"""
 
         if self.graph_alg=='kg_path':
 
-            if len(query_ner_list) > 0: # 使用Path
+            if len(query_ner_list) > 0:  # use Path
                 query_ner_embeddings = self.embed_model.encode(query_ner_list, normalize_embeddings=True, device='cuda', show_progress_bar=False)
                 # Get Closest Entity Nodes
                 prob_vectors = np.dot(query_ner_embeddings, self.kb_node_phrase_embeddings.T)  # (num_ner, dim) x (num_phrases, dim).T -> (num_ner, num_phrases)
                 linked_phrase_ids = []  # Seed Phrases
 
                 for prob_vector in prob_vectors:
-                    phrase_id = np.argmax(prob_vector)  # the phrase with the highest similarity  只取了相似性最大的一个id
+                    phrase_id = np.argmax(prob_vector)  # the phrase with the highest similarity
                     linked_phrase_ids.append(phrase_id)
                 
                 
-                # 拿到新排名的doc id
+                # get re-ranked doc ids
                 candidate_doc_ids, candidate_paths, total_tokens, all_thought, llm_time_for_one_q = self.get_path_filtered_docs(None, linked_phrase_ids, query, one_shot)
                 
                 query_embedding = self.embed_model.encode([query+all_thought], normalize_embeddings=True, device='cuda', show_progress_bar=False)
-                # assert False
                 
                 query_doc_scores = np.dot(self.doc_embedding_mat, query_embedding.T)
                 query_doc_scores = query_doc_scores.T[0]
 
                 doc_ids = []
                 doc_scores = []
-                # 拿到了所有文档的根据向量相似度的分数
+                # all-doc similarity scores
                 doc_prob = query_doc_scores
-                # 排序后的id和分数
+                # sorted ids and scores
                 sorted_doc_ids = np.argsort(doc_prob)[::-1]
                 sorted_scores = doc_prob[sorted_doc_ids]
                 
                 for t in candidate_doc_ids:
                     doc_ids.append(t)
-                    doc_scores.append(1) # 占位
-                # for idx in range(len(doc_prob)):  # 补足后面的检索文档，方便计算top k的召回率
-                for idx in range(100):  # 补足后面的检索文档，方便计算top k的召回率
+                    doc_scores.append(1)  # placeholder score
+                # pad with the remaining top docs to keep top-k recall meaningful
+                for idx in range(100):
                     if sorted_doc_ids[idx] not in doc_ids:
                         doc_ids.append(sorted_doc_ids[idx])
                         doc_scores.append(sorted_scores[idx])
-            else:  # 直接使用相似性检索
+            else:  # fallback to pure similarity retrieval
                 query_embedding = self.embed_model.encode([query], normalize_embeddings=True, device='cuda', show_progress_bar=False)
-                # query_embedding = self.embed_model.encode([virtual_target_path.replace("->", " ")], normalize_embeddings=True, device='cuda', show_progress_bar=False)
-                # assert False
                 query_doc_scores = np.dot(self.doc_embedding_mat, query_embedding.T)
                 query_doc_scores = query_doc_scores.T[0]
 
 
                 doc_ids = []
                 doc_scores = []
-                # 拿到了所有文档的根据向量相似度的分数
                 doc_prob = query_doc_scores
-                # 排序后的id和分数
-                # sorted_doc_ids = np.argsort(doc_prob, kind='mergesort')[::-1]
                 sorted_doc_ids = np.argsort(doc_prob)[::-1]
                 sorted_scores = doc_prob[sorted_doc_ids]
                 
-                #
                 doc_ids = sorted_doc_ids
                 doc_scores = sorted_scores
                 
@@ -656,30 +583,6 @@ Paths:\n"""
                 self.logger.error('Error in Query NER')
                 query_ner_list = []
         return query_ner_list
-
-    def get_neighbors(self, prob_vector, max_depth=1):
-
-        initial_nodes = prob_vector.nonzero()[0]
-        min_prob = np.min(prob_vector[initial_nodes])
-
-        for initial_node in initial_nodes:
-            all_neighborhood = []
-
-            current_nodes = [initial_node]
-
-            for depth in range(max_depth):
-                next_nodes = []
-
-                for node in current_nodes:
-                    next_nodes.extend(self.g.neighbors(node))
-                    all_neighborhood.extend(self.g.neighbors(node))
-
-                current_nodes = list(set(next_nodes))
-
-            for i in set(all_neighborhood):
-                prob_vector[i] += 0.5 * min_prob
-
-        return prob_vector
 
     def load_corpus(self):
         if self.corpus_path is None:
@@ -764,9 +667,8 @@ Paths:\n"""
         self.doc_to_phrases_mat = self.docs_to_facts_mat.dot(self.facts_to_phrases_mat)
         self.doc_to_phrases_mat[self.doc_to_phrases_mat.nonzero()] = 1
         self.phrase_to_num_doc = self.doc_to_phrases_mat.sum(0).T
-        ## 新增 phrase_to_doc_mat  可以从phrase id 取到所有有这个phrase的文档id
+        # phrase_to_doc_mat: given a phrase id, fetch all doc ids containing it
         self.phrase_to_doc_mat = self.doc_to_phrases_mat.T
-        ## 新增 end
 
         graph_file_path = 'output/{}_{}_graph_mean_{}_thresh_{}_{}_{}.{}.subset.p'.format(self.corpus_name, self.graph_type,
                                                                                           str(self.sim_threshold), self.phrase_type,
@@ -821,7 +723,7 @@ Paths:\n"""
     def load_node_vectors(self):
         encoded_string_path = 'data/lm_vectors/{}_mean/encoded_strings.txt'.format(self.linking_retriever_name_processed)
         if os.path.isfile(encoded_string_path):
-            self.load_node_vectors_from_string_encoding_cache(encoded_string_path)   # 拿到所有的实体节点向量 保存在 self.kb_node_phrase_embeddings
+            self.load_node_vectors_from_string_encoding_cache(encoded_string_path)   # loads all KB node embeddings into self.kb_node_phrase_embeddings
         else:  # use another way to load node vectors
             if self.linking_retriever_name == 'colbertv2':
                 return
@@ -844,7 +746,7 @@ Paths:\n"""
             kb_vectors.append(
                 torch.Tensor(pickle.load(
                     open('data/lm_vectors/{}_mean/vecs_{}.p'.format(self.linking_retriever_name_processed, i), 'rb'))))   # vec_nums * emb_dim
-        kb_mat = torch.cat(kb_vectors)  # a matrix of phrase vectors   # 存放所有实体向量的mat
+        kb_mat = torch.cat(kb_vectors)  # matrix of phrase vectors
         self.strings = [s.strip() for s in self.strings]
         self.string_to_id = {string: i for i, string in enumerate(self.strings)}
         kb_mat = kb_mat.T.divide(torch.linalg.norm(kb_mat, dim=1)).T    # L2 norm
@@ -869,113 +771,6 @@ Paths:\n"""
             self.logger.info(f'Loaded doc embeddings from {cache_filename}, shape: {self.doc_embedding_mat.shape}')
         else:
             self.doc_embeddings = []
-            self.doc_embedding_mat = self.embed_model.encode(self.dataset_df['paragraph'].tolist(), normalize_embeddings=True, device='cuda', batch_size=16) # 原本64
+            self.doc_embedding_mat = self.embed_model.encode(self.dataset_df['paragraph'].tolist(), normalize_embeddings=True, device='cuda', batch_size=16)
             pickle.dump(self.doc_embedding_mat, open(cache_filename, 'wb'))
             self.logger.info(f'Saved doc embeddings to {cache_filename}, shape: {self.doc_embedding_mat.shape}')
-
-
-    def get_colbert_max_score(self, query):
-        queries_ = [query]
-        encoded_query = self.phrase_searcher.encode(queries_, full_length_search=False)
-        encoded_doc = self.phrase_searcher.checkpoint.docFromText(queries_).float()
-        max_score = encoded_query[0].matmul(encoded_doc[0].T).max(dim=1).values.sum().detach().cpu().numpy()
-
-        return max_score
-
-    def get_colbert_real_score(self, query, doc):
-        queries_ = [query]
-        encoded_query = self.phrase_searcher.encode(queries_, full_length_search=False)
-
-        docs_ = [doc]
-        encoded_doc = self.phrase_searcher.checkpoint.docFromText(docs_).float()
-
-        real_score = encoded_query[0].matmul(encoded_doc[0].T).max(dim=1).values.sum().detach().cpu().numpy()
-
-        return real_score
-
-    def link_node_by_colbertv2(self, query_ner_list):
-        phrase_ids = []
-        max_scores = []
-
-        for query in query_ner_list:
-            queries = Queries(path=None, data={0: query})
-
-            queries_ = [query]
-            encoded_query = self.phrase_searcher.encode(queries_, full_length_search=False)
-
-            max_score = self.get_colbert_max_score(query)
-
-            ranking = self.phrase_searcher.search_all(queries, k=1)
-            for phrase_id, rank, score in ranking.data[0]:
-                phrase = self.phrases[phrase_id]
-                phrases_ = [phrase]
-                encoded_doc = self.phrase_searcher.checkpoint.docFromText(phrases_).float()
-                real_score = encoded_query[0].matmul(encoded_doc[0].T).max(dim=1).values.sum().detach().cpu().numpy()
-
-                phrase_ids.append(phrase_id)
-                max_scores.append(real_score / max_score)
-
-        # create a vector (num_doc) with 1s at the indices of the retrieved documents and 0s elsewhere
-        top_phrase_vec = np.zeros(len(self.phrases))
-
-        for phrase_id in phrase_ids:
-            if self.node_specificity:
-                if self.phrase_to_num_doc[phrase_id] == 0:
-                    weight = 1
-                else:
-                    weight = 1 / self.phrase_to_num_doc[phrase_id]
-                top_phrase_vec[phrase_id] = weight
-            else:
-                top_phrase_vec[phrase_id] = 1.0
-
-        return top_phrase_vec, {(query, self.phrases[phrase_id]): max_score for phrase_id, max_score, query in zip(phrase_ids, max_scores, query_ner_list)}
-
-    def link_node_by_dpr(self, query_ner_list: list):
-        """
-        Get the most similar phrases (as vector) in the KG given the named entities
-        :param query_ner_list:
-        :return:
-        """
-        query_ner_embeddings = self.embed_model.encode_text(query_ner_list, return_cpu=True, return_numpy=True, norm=True)
-
-        # Get Closest Entity Nodes
-        prob_vectors = np.dot(query_ner_embeddings, self.kb_node_phrase_embeddings.T)  # (num_ner, dim) x (num_phrases, dim).T -> (num_ner, num_phrases)
-
-        linked_phrase_ids = []
-        max_scores = []
-
-        for prob_vector in prob_vectors:
-            # 源代码
-            phrase_id = np.argmax(prob_vector)  # the phrase with the highest similarity  只取了相似性最大的一个id
-            linked_phrase_ids.append(phrase_id)
-            max_scores.append(prob_vector[phrase_id])
-            # 源代码 end
-            
-            # ## 更改代码 ====
-            # # 获取 top n 个最大索引
-            # n = 2
-            # top_n_indices = np.argsort(prob_vector)[-n:][::-1]
-            # for phrase_id in top_n_indices:
-            #     linked_phrase_ids.append(phrase_id)
-            #     max_scores.append(prob_vector[phrase_id])
-            # # 更改代码 end ===
-
-
-        # create a vector (num_phrase) with 1s at the indices of the linked phrases and 0s elsewhere
-        # if node_specificity is True, it's not one-hot but a weight
-        all_phrase_weights = np.zeros(len(self.phrases))
-
-        for phrase_id in linked_phrase_ids:
-            if self.node_specificity:
-                if self.phrase_to_num_doc[phrase_id] == 0:  # just in case the phrase is not recorded in any documents
-                    weight = 1
-                else:  # the more frequent the phrase, the less weight it gets
-                    weight = 1 / self.phrase_to_num_doc[phrase_id]
-
-                all_phrase_weights[phrase_id] = weight
-            else:
-                all_phrase_weights[phrase_id] = 1.0
-
-        linking_score_map = {(query_phrase, self.phrases[linked_phrase_id]): max_score
-                             for linked_phrase_id, max_score, query_phrase in zip(linked_phrase_ids, max_scores, query_ner_list)}
-        return all_phrase_weights, linking_score_map
