@@ -3,10 +3,6 @@ from functools import partial
 
 sys.path.append('.')
 
-from src.processing import extract_json_dict
-from langchain_community.chat_models import ChatLlamaCpp
-from langchain_ollama import ChatOllama
-
 import argparse
 from multiprocessing import Pool
 
@@ -14,7 +10,6 @@ import numpy as np
 import pandas as pd
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 
 from tqdm import tqdm
 
@@ -52,20 +47,10 @@ def ner_vtp_extraction(client, text: str):
 
     json_mode = False
     try:
-        if isinstance(client, ChatOpenAI):  # JSON mode
-            chat_completion = client.invoke(query_ner_messages.to_messages(), temperature=0, max_tokens=1000, stop=['\n\n'], response_format={"type": "json_object"})
-            response_content = chat_completion.content
-            total_tokens = chat_completion.response_metadata['token_usage']['total_tokens']
-            json_mode = True
-        elif isinstance(client, ChatOllama) or isinstance(client, ChatLlamaCpp):
-            response_content = client.invoke(query_ner_messages.to_messages())
-            response_content = extract_json_dict(response_content)
-            total_tokens = len(response_content.split())
-        else:  # no JSON mode
-            chat_completion = client.invoke(query_ner_messages.to_messages(), temperature=0, max_tokens=1000, stop=['\n\n'])
-            response_content = chat_completion.content
-            response_content = extract_json_dict(response_content)
-            total_tokens = chat_completion.response_metadata['token_usage']['total_tokens']
+        chat_completion = client.invoke(query_ner_messages.to_messages(), temperature=0, max_tokens=1000, stop=['\n\n'], response_format={"type": "json_object"})
+        response_content = chat_completion.content
+        total_tokens = chat_completion.response_metadata['token_usage']['total_tokens']
+        json_mode = True
     except Exception as e:
         print(e)
         response_content = {'named_entities': []}
@@ -97,7 +82,7 @@ def run_ner_vtp_on_texts(texts, llm='openai', model_name='gpt-4o-mini'):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str)
-    parser.add_argument('--llm', type=str, default='openai', help="LLM provider, e.g., 'openai' or 'together'")
+    parser.add_argument('--llm', type=str, default='openai', help="LLM provider (only 'openai' is supported; use an OpenAI-compatible base_url for vLLM/Ollama).")
     parser.add_argument('--model_name', type=str, default='gpt-4o-mini', help='Specific model name')
     parser.add_argument('--num_processes', type=int, default=8, help='Number of processes')
 
